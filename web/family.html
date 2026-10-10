@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Anna's Approvals</title>
+<style>
+  :root { --bg: #eef0f3; --phone: #ffffff; --ink: #1d1f24; --muted: #5d6270; --line: #e3e6eb; --ok: #1f6f5c; --no: #a33a2a; --warn-bg: #fbeee8; --warn: #9a3b1b; }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) { --bg: #101317; --phone: #1b1f26; --ink: #eceef2; --muted: #a3a9b6; --line: #2c313b; --ok: #47b496; --no: #f07a66; --warn-bg: #2d1f1a; --warn: #f0a080; }
+  }
+  :root[data-theme="dark"] { --bg: #101317; --phone: #1b1f26; --ink: #eceef2; --muted: #a3a9b6; --line: #2c313b; --ok: #47b496; --no: #f07a66; --warn-bg: #2d1f1a; --warn: #f0a080; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; display: flex; justify-content: center; padding: 24px 16px; }
+  .phone { width: 100%; max-width: 400px; background: var(--phone); border-radius: 28px; border: 1px solid var(--line); padding: 20px 16px 28px; box-shadow: 0 10px 30px rgba(0,0,0,.12); }
+  h1 { font-size: 20px; margin: 0; }
+  .sub { color: var(--muted); font-size: 14px; margin: 2px 0 16px; }
+  .card { border: 1px solid var(--line); border-radius: 16px; padding: 14px; margin-bottom: 12px; }
+  .card.pending { border-color: var(--warn); background: var(--warn-bg); }
+  .card h2 { font-size: 16px; margin: 0 0 6px; }
+  .card ul { margin: 6px 0 10px; padding-left: 18px; font-size: 14px; }
+  .meta { font-size: 13px; color: var(--muted); }
+  .actions { display: flex; gap: 8px; margin-top: 8px; }
+  .actions button { flex: 1; font: inherit; font-weight: 600; padding: 12px; border-radius: 12px; border: 0; cursor: pointer; color: #fff; }
+  .approve { background: var(--ok); } .deny { background: var(--no); }
+  .status { font-weight: 600; } .status.approved { color: var(--ok); } .status.denied { color: var(--no); }
+  .empty { color: var(--muted); text-align: center; padding: 32px 0; }
+</style>
+</head>
+<body>
+<div class="phone">
+  <h1>Money Guardian</h1>
+  <p class="sub">Requests from Mom's assistant. Nothing is paid until you answer.</p>
+  <div id="list"><p class="empty">No requests yet.</p></div>
+</div>
+<script>
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+let last = "";
+async function load() {
+  try {
+    const r = await fetch("/api/approvals"); const items = await r.json();
+    const key = JSON.stringify(items); if (key === last) return; last = key;
+    const list = document.getElementById("list");
+    if (!items.length) { list.innerHTML = '<p class="empty">No requests yet.</p>'; return; }
+    list.innerHTML = items.map((a) => `
+      <div class="card ${a.status}">
+        <h2>${esc(a.summary)}</h2>
+        ${a.reasons?.length ? `<ul>${a.reasons.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>` : ""}
+        <div class="meta">Asked ${new Date(a.created_at).toLocaleString("en-GB", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" })}</div>
+        ${a.status === "pending"
+          ? `<div class="actions"><button class="approve" data-id="${esc(a.approval_id)}" data-d="approve">Approve</button><button class="deny" data-id="${esc(a.approval_id)}" data-d="deny">Say no</button></div>`
+          : `<div class="status ${a.status}">${a.status === "approved" ? "You approved this" : "You said no"}</div>`}
+      </div>`).join("");
+  } catch {}
+}
+document.addEventListener("click", async (e) => {
+  const b = e.target.closest("button[data-id]"); if (!b) return;
+  b.disabled = true;
+  await fetch(`/api/approvals/${encodeURIComponent(b.dataset.id)}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ decision: b.dataset.d }) });
+  last = ""; load();
+});
+load(); setInterval(load, 2000);
+</script>
+</body>
+</html>

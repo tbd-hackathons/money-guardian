@@ -1,0 +1,27 @@
+{
+  "_note": "Fictional demo household. No real person, account or bank data.",
+  "owner": {"name": "Margaret", "age": 78, "state": "OH"},
+  "trusted_contact": {"name": "Anna", "relation": "daughter", "email": "anna@example.com"},
+  "approval_threshold_usd": 500,
+  "payees": [
+    {"id": "ohio-power", "name": "Ohio Power Co.", "account_last4": "4417", "category": "electricity"},
+    {"id": "columbus-water", "name": "Columbus Water", "account_last4": "0932", "category": "water"},
+    {"id": "medicare-supplement", "name": "Medicare Supplement Plan", "account_last4": "7781", "category": "insurance"}
+  ],
+  "history": [
+    {"payee": "ohio-power", "date": "2026-07-03", "amount": 118.40},
+    {"payee": "ohio-power", "date": "2026-08-04", "amount": 131.15},
+    {"payee": "ohio-power", "date": "2026-09-03", "amount": 124.90},
+    {"payee": "columbus-water", "date": "2026-07-10", "amount": 46.20},
+    {"payee": "columbus-water", "date": "2026-08-11", "amount": 49.75},
+    {"payee": "columbus-water", "date": "2026-09-10", "amount": 44.10},
+    {"payee": "medicare-supplement", "date": "2026-07-01", "amount": 212.00},
+    {"payee": "medicare-supplement", "date": "2026-08-01", "amount": 212.00},
+    {"payee": "medicare-supplement", "date": "2026-09-01", "amount": 212.00}
+  ],
+  "pending_bills": [
+    {"id": "bill-oct-power", "payee": "ohio-power", "amount": 486.30, "due": "2026-10-20",
+     "pay_to_account_last4": "9026", "note": "Payment details updated on 2026-10-06 by email request."},
+    {"id": "bill-oct-water", "payee": "columbus-water", "amount": 47.60, "due": "2026-10-21", "pay_to_account_last4": "0932"}
+  ]
+}

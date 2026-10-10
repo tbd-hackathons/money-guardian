@@ -1,0 +1,80 @@
+# Money Guardian
+
+A voice assistant for older adults in the US, built as an MCP server for Alexa+. It checks investment offers before money moves and holds unusual bills until a family member says yes.
+
+In 2025, Americans aged 60 and over reported US$7.75 billion in losses to the FBI. Investment fraud was the largest part, at US$3.52 billion ([FBI IC3 2025 Internet Crime Report](https://www.ic3.gov/AnnualReport/Reports/2025_IC3Report.pdf)). The scams often start with a call, a text or a social media message, and the person has no quick way to check what they were told.
+
+## What it does
+
+Margaret, 78, says: *"A man named John Carter called me. He says I'm guaranteed 18% a year, but only today, and I should keep it between us."*
+
+Money Guardian:
+
+1. **Hears the red flags** the regulators warn about: a guaranteed return, pressure to act now, secrecy. Each flag links to the FINRA or SEC page it comes from.
+2. **Compares the promise with a safe rate.** It reads the latest Treasury bill auction results from TreasuryDirect: "They promised 18%. A US Treasury bill paid about 4.62% at its latest sale, on September 29."
+3. **Checks the seller** in FINRA BrokerCheck and the SEC adviser register. If nobody with that name is registered, it says so.
+4. **Asks Anna**, her daughter, on Anna's own phone. Nothing goes ahead until Anna answers.
+
+It does the same for bills. The October power bill is 3.9 times the usual amount, and the account to pay was changed by email. Money Guardian holds it, asks Anna, and pays only after she approves. It never pays the same bill twice.
+
+## Run it
+
+Needs Node.js 20 or later. No accounts and no API keys.
+
+```bash
+npm install
+make run
+```
+
+Open http://127.0.0.1:8790 for the Alexa+ simulator, and http://127.0.0.1:8790/family for Anna's phone. Click the example phrases in order, or type or talk (Chrome supports the microphone).
+
+```bash
+make test
+```
+
+### Modes
+
+- **Scripted (default).** A small router chooses the tools. Nothing to sign up for.
+- **Claude.** Set `ANTHROPIC_API_KEY` and Claude chooses the tools and phrases the reply (default model `claude-opus-5-5`, change with `MG_MODEL`). Server-side fallback is on: if the model declines a request, the API retries on a fallback model.
+
+In both modes the simulator is an MCP client of the server's own `/mcp` endpoint, the same way Alexa+ calls it.
+
+## MCP tools
+
+Endpoint: `POST /mcp` (Streamable HTTP, stateless, spec 2025-11-25).
+
+| Tool | What it does | Source |
+|---|---|---|
+| `check_seller` | Is this person or firm registered to sell investments or give advice? | FINRA BrokerCheck, SEC IAPD |
+| `check_pitch` | Red flags in what was said, and the promised return against today's T-bill rate | FINRA, investor.gov, TreasuryDirect |
+| `explain_product` | A Treasury bill, CD, annuity or bond in plain words, with its risks and the questions to ask | investor.gov, TreasuryDirect |
+| `check_bank` | Is this bank an active FDIC-insured bank? | FDIC BankFind |
+| `review_bills` | Pending bills against the household's own history | Household data |
+| `request_family_approval` | Ask the trusted contact. Asking twice returns the same request. | Ledger |
+| `approval_status` | Has the trusted contact answered? | Ledger |
+| `pay_bill` | Pays a bill once. A held bill needs an approved request. | Ledger (payment simulated) |
+
+## How it stays safe
+
+- **A failed check is not a pass.** If a register or rate source cannot be read, the reply says "I could not check", never "it looks fine".
+- **Money counts once it is confirmed.** A payment is recorded as "paying", then "paid" with a confirmation. If it stops between the two, the next attempt reports "maybe paid" and does not pay again.
+- **The assistant cannot approve its own request.** Approving is not an MCP tool; only Anna's page calls the approval API. In this demo that page has no login, and the server listens on 127.0.0.1 only. A real deployment needs Anna to sign in.
+- **Budget cap.** At most 8 tool rounds per spoken request.
+- **Not advice.** Every investment reply says it is general information, not financial advice.
+
+## Data and attribution
+
+- FINRA BrokerCheck and SEC Investment Adviser Public Disclosure. Used to check a single named seller, at a low rate, with a 10-minute cache. Set `MG_USER_AGENT` with a contact address.
+- TreasuryDirect auction results (`TA_WS/securities/auctioned`). The rate shown is the investment rate at the latest auction for each term.
+- FDIC BankFind Suite API.
+- Red-flag wording comes from FINRA's "Red Flags of Fraud" and the SEC investor alerts linked in `src/redflags.js`.
+
+The household in `fixtures/household.json` is fictional. Payments are simulated: there is no bank connection.
+
+## Built during the hackathon
+
+Everything in this repository was written for the Amazon Developer Hackathon (Alexa+ track), starting 10 Oct 2026.
+
+## License
+
+MIT
