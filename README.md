@@ -74,6 +74,7 @@ Endpoint: `POST /mcp` (Streamable HTTP, stateless, spec 2025-11-25).
 
 - **A failed check is not a pass.** If a register cannot be read, the reply says "I couldn't reach the registers", never "not registered" or "it looks fine" (a test enforces it).
 - **Money counts once it is confirmed.** A payment is recorded as "paying", then "paid" with a confirmation. If it stops between the two, the next attempt reports "maybe paid" and does not pay again.
+- **Anna can answer by email.** With Amazon SES set up (see `.env.example`), a new request emails Anna a link. Opening the link changes nothing; only pressing Approve or Say no on that page decides, because mail scanners open links by themselves. Each link is signed and expires after 7 days. Visitors of the hosted demo never trigger email, and sending is capped per hour.
 - **The assistant cannot approve its own request.** Approving is not an MCP tool; only Anna's page calls the approval API. In this demo that page has no login: anyone holding a demo's link can answer for Anna, but only inside that one demo household. On a laptop the server listens on 127.0.0.1 only. A real deployment needs Anna to sign in.
 - **Budget cap.** At most 8 tool rounds per spoken request.
 - **Short answers, details on request.** Spoken answers stay under 40 words (a test enforces it). "Tell me more" gives the details and the sources.

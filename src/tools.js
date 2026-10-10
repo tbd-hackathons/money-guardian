@@ -6,6 +6,7 @@ import { searchRegisters, treasuryBillYields, fdicBank, ATTRIBUTION } from "./so
 import { scanPitch, claimedReturn } from "./redflags.js";
 import { PRODUCTS, findProduct } from "./products.js";
 import { reviewBill, requestApproval, approvalStatus, payBill, household } from "./guard.js";
+import { notifyFamily } from "./notify.js";
 
 const spokenDate = (ymd) => new Date(`${ymd}T12:00:00Z`).toLocaleDateString("en-US", { month: "long", day: "numeric", timeZone: "UTC" });
 
@@ -148,7 +149,9 @@ export function buildServer() {
     inputSchema: { subject_id: z.string().describe("The bill id, or a short id for the investment offer"), summary: z.string(), reasons: z.array(z.string()).default([]), amount_usd: z.number().optional() },
   }, async (args) => {
     const a = requestApproval(args);
-    return reply(`I've asked ${a.asked}, your ${a.relation}, to look at this. Nothing goes ahead until ${a.asked} answers.`, a);
+    const email = a.note ? null : await notifyFamily(a); // a new request only: asking twice sends nothing twice
+    const how = email?.sent ? "emailed" : "asked";
+    return reply(`I've ${how} ${a.asked}, your ${a.relation}, to look at this. Nothing goes ahead until ${a.asked} answers.`, { ...a, ...(email ? { email } : {}) });
   });
 
   server.registerTool("approval_status", {

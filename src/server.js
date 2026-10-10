@@ -6,7 +6,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { buildServer } from "./tools.js";
-import { listApprovals, decide, resetLedger } from "./guard.js";
+import { listApprovals, approvalStatus, decide, resetLedger, household } from "./guard.js";
+import { readToken } from "./notify.js";
 import { chat, resetSession, mode, provider } from "./agent.js";
 import { treasuryBillYields } from "./sources.js";
 import { runWithDemo, cleanDemoId } from "./demo.js";
@@ -31,7 +32,7 @@ function allowed(req) {
   return recent.length <= LIMIT;
 }
 
-async function readBody(req) {
+async function readRaw(req) {
   const chunks = [];
   let size = 0;
   for await (const c of req) {
@@ -39,7 +40,11 @@ async function readBody(req) {
     if (size > MAX_BODY) throw Object.assign(new Error("request too large"), { status: 413 });
     chunks.push(c);
   }
-  const raw = Buffer.concat(chunks).toString("utf8");
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+async function readBody(req) {
+  const raw = await readRaw(req);
   try {
     return raw ? JSON.parse(raw) : undefined;
   } catch {
@@ -54,6 +59,30 @@ function send(res, code, body, type = "application/json") {
 }
 
 const PAGES = { "/": "web/alexa.html", "/family": "web/family.html" };
+
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+
+// The page an emailed link opens. Opening it changes nothing; only a button press decides.
+function answerPage(a, token) {
+  const name = household().trusted_contact.name;
+  const body = !a || a.error ? "<h1>This request no longer exists</h1>"
+    : `<h1>${esc(a.summary)}</h1>
+${a.reasons?.length ? `<ul>${a.reasons.map((r) => `<li>${esc(r)}</li>`).join("")}</ul>` : ""}
+${a.status === "pending"
+    ? `<form method="post" action="/a/${esc(token)}"><button name="decision" value="approve" class="ok">Approve</button><button name="decision" value="deny" class="no">Say no</button></form>
+<p class="muted">Nothing is paid or sent until you answer.</p>`
+    : `<p class="done ${a.status}">${a.status === "approved" ? "You approved this." : "You said no."}</p>`}`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer"><title>Money Guardian</title><style>
+:root{--bg:#eef0f3;--card:#fff;--ink:#1d1f24;--muted:#5d6270;--ok:#1f6f5c;--no:#a33a2a}
+@media (prefers-color-scheme:dark){:root{--bg:#101317;--card:#1b1f26;--ink:#eceef2;--muted:#a3a9b6;--ok:#47b496;--no:#f07a66}}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;display:flex;justify-content:center;padding:24px 16px}
+main{width:100%;max-width:440px;background:var(--card);border-radius:20px;padding:20px}h1{font-size:19px;margin:4px 0 8px}
+.eyebrow,.muted{color:var(--muted);font-size:14px}form{display:flex;gap:8px;margin-top:12px}
+button{flex:1;font:inherit;font-weight:600;padding:14px;border:0;border-radius:12px;color:#fff;cursor:pointer}.ok{background:var(--ok)}.no{background:var(--no)}
+.done{font-weight:600}.done.approved{color:var(--ok)}.done.denied{color:var(--no)}</style></head>
+<body><main><p class="eyebrow">Money Guardian · for ${esc(name)}</p>${body}</main></body></html>`;
+}
 
 const app = http.createServer((req, res) => {
   const url = new URL(req.url, "http://localhost");
@@ -93,6 +122,19 @@ async function handle(req, res, url) {
       const { decision } = (await readBody(req)) || {};
       if (!["approve", "deny"].includes(decision)) return send(res, 400, { error: "decision must be approve or deny" });
       return send(res, 200, decide(id, decision));
+    }
+    if (url.pathname.startsWith("/a/")) {
+      const token = url.pathname.slice(3);
+      const t = readToken(token);
+      if (!t) return send(res, 404, answerPage(null, token), "text/html");
+      return runWithDemo(t.d, async () => {
+        if (req.method === "POST") {
+          const decision = new URLSearchParams(await readRaw(req)).get("decision");
+          if (!["approve", "deny"].includes(decision)) return send(res, 400, { error: "decision must be approve or deny" });
+          decide(t.a, decision);
+        }
+        send(res, 200, answerPage(approvalStatus(t.a), token), "text/html");
+      });
     }
     if (PAGES[url.pathname]) return send(res, 200, readFileSync(join(ROOT, PAGES[url.pathname]), "utf8"), "text/html");
     send(res, 404, { error: "not found" });
