@@ -8,7 +8,7 @@ import net from "node:net";
 // before trying IPv4 is too short and fetch then times out. Give each address family 500 ms.
 net.setDefaultAutoSelectFamilyAttemptTimeout(500);
 
-const UA = process.env.MG_USER_AGENT || "MoneyGuardian/0.1 (investor-protection hackathon demo)";
+const UA = process.env.MG_USER_AGENT || "MoneyGuardian/0.1 (+https://github.com/tbd-hackathons/money-guardian)";
 const TTL_MS = 10 * 60 * 1000;
 const cache = new Map();
 const lastCall = new Map(); // per host, so FINRA and the SEC are each called politely but in parallel
