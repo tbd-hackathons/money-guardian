@@ -69,7 +69,7 @@
 <header>
   <h1>Money Guardian</h1>
   <p>An Alexa+ simulator. Everything it does goes through the Money Guardian MCP server, the same way Alexa+ would call it. <span id="mode"></span></p>
-  <a href="/family" target="_blank" rel="noopener">Open Anna's phone</a>
+  <a id="anna" href="/family" target="_blank" rel="noopener">Open Anna's phone</a>
   <button type="button" id="reset">Start over</button>
 </header>
 <main>
@@ -97,6 +97,14 @@
 <footer>Demo household is fictional. Payments are simulated. Register and rate data: FINRA BrokerCheck, SEC IAPD, TreasuryDirect, FDIC. General information, not financial advice.</footer>
 <script>
 const $ = (id) => document.getElementById(id);
+// Every visitor gets their own demo household, kept in the address so Anna's page can follow it.
+const demo = (() => {
+  const u = new URL(location.href);
+  let d = u.searchParams.get("demo");
+  if (!/^[a-z0-9]{6,24}$/.test(d || "")) { d = Math.random().toString(36).slice(2, 12).padEnd(8, "0"); u.searchParams.set("demo", d); history.replaceState(null, "", u); }
+  return d;
+})();
+const api = (path) => `${path}?demo=${demo}`;
 const log = $("log"), trace = $("trace"), ring = $("ring");
 let sessionId = (() => { try { return sessionStorage.getItem("mg-session") || newId(); } catch { return newId(); } })();
 function newId() { const id = Math.random().toString(36).slice(2, 10); try { sessionStorage.setItem("mg-session", id); } catch {} return id; }
@@ -158,7 +166,7 @@ async function send(text) {
   bubble(text, "you");
   const wait = bubble("Checking…", "alexa", "thinking"); ring.classList.add("on");
   try {
-    const r = await fetch("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ session_id: sessionId, text }) });
+    const r = await fetch(api("/api/chat"), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ session_id: sessionId, text }) });
     const j = await r.json();
     if (!r.ok) throw new Error(j.error || r.status);
     wait.remove(); bubble(j.reply, "alexa"); speak(j.reply); showTrace(j.trace || []);
@@ -177,12 +185,13 @@ if (!SR) $("mic").hidden = true; else {
 }
 
 $("reset").onclick = async () => {
-  await fetch("/api/reset", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ session_id: sessionId }) });
+  await fetch(api("/api/reset"), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ session_id: sessionId }) });
   sessionId = newId(); log.innerHTML = ""; trace.innerHTML = '<p class="empty">Tool calls appear here.</p>'; greet();
 };
 function greet() { bubble("Hi Margaret. I can check an investment offer, look up who is selling it, or review your bills before you pay.", "alexa"); }
-fetch("/api/mode").then((r) => r.json()).then((j) => { $("mode").textContent = j.mode === "claude" ? "Running on Claude." : "Running in scripted mode (no AI key needed)."; }).catch(() => {});
+fetch(api("/api/mode")).then((r) => r.json()).then((j) => { $("mode").textContent = j.mode === "claude" ? "Running on Claude." : "Running in scripted mode (no AI key needed)."; }).catch(() => {});
 const tick = () => { $("clock").textContent = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }); }; tick(); setInterval(tick, 30000);
+$("anna").href = api("/family");
 greet();
 </script>
 </body>

@@ -36,6 +36,16 @@ Open http://127.0.0.1:8790 for the Alexa+ simulator, and http://127.0.0.1:8790/f
 make test
 ```
 
+### Hosting
+
+```bash
+docker build -t money-guardian . && docker run -p 8790:8790 money-guardian
+```
+
+The image runs anywhere Docker runs. Each visitor gets their own demo household (`?demo=<id>` in the
+address), so judges never see each other's approvals. POST requests are limited to 30 a minute per
+visitor (`MG_RATE_PER_MIN`); behind a proxy set `TRUST_PROXY=1`. `GET /healthz` reports status.
+
 ### Modes
 
 - **Scripted (default).** A small router chooses the tools. Nothing to sign up for.

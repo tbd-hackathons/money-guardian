@@ -79,3 +79,16 @@ test("an unreadable register is never reported as 'not registered'", async () =>
   assert.doesNotMatch(r.reply, /not registered/);
   assert.match(r.reply, /scam/); // the pitch itself is still judged
 });
+
+test("two hosted-demo visitors never see each other's approvals", async () => {
+  const chatAs = (demo, text) => fetch(`${base}/api/chat?demo=${demo}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ session_id: demo, text }) }).then((r) => r.json());
+  await chatAs("judgeaaa1", "Pay the power bill.");
+  await chatAs("judgeaaa1", "Yes please.");
+  const a = await (await fetch(`${base}/api/approvals?demo=judgeaaa1`)).json();
+  const b = await (await fetch(`${base}/api/approvals?demo=judgebbb2`)).json();
+  assert.equal(a.length, 1);
+  assert.equal(b.length, 0);
+  // and judge B cannot approve judge A's request
+  const r = await (await fetch(`${base}/api/approvals/${a[0].approval_id}?demo=judgebbb2`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ decision: "approve" }) })).json();
+  assert.match(r.error, /No approval/);
+});

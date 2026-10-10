@@ -6,25 +6,30 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync, renameSync } from "
 import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { currentDemo } from "./demo.js";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const HOUSEHOLD = process.env.MG_HOUSEHOLD || join(ROOT, "fixtures", "household.json");
 const LEDGER = process.env.MG_LEDGER || join(ROOT, "data", "ledger.json");
+// One ledger per hosted-demo visitor; the shared one when no demo id is given (local use, other MCP clients).
+const ledgerPath = () => (currentDemo() ? join(dirname(LEDGER), "demos", `${currentDemo()}.json`) : LEDGER);
 
 export function household() {
   return JSON.parse(readFileSync(HOUSEHOLD, "utf8"));
 }
 
 function loadLedger() {
-  if (!existsSync(LEDGER)) return { approvals: {}, payments: {} };
-  return JSON.parse(readFileSync(LEDGER, "utf8"));
+  const path = ledgerPath();
+  if (!existsSync(path)) return { approvals: {}, payments: {} };
+  return JSON.parse(readFileSync(path, "utf8"));
 }
 
 function saveLedger(l) {
-  mkdirSync(dirname(LEDGER), { recursive: true });
-  const tmp = LEDGER + ".tmp";
+  const path = ledgerPath();
+  mkdirSync(dirname(path), { recursive: true });
+  const tmp = path + ".tmp";
   writeFileSync(tmp, JSON.stringify(l, null, 2));
-  renameSync(tmp, LEDGER); // atomic: a crash never leaves half a ledger
+  renameSync(tmp, path); // atomic: a crash never leaves half a ledger
 }
 
 const median = (xs) => { const s = [...xs].sort((a, b) => a - b); const m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };

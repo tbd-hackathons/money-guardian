@@ -19,3 +19,15 @@ jobs:
       - run: npm ci
       - run: make lint
       - run: make test
+  container:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t money-guardian .
+      - name: Image starts and answers
+        run: |
+          docker run -d --name mg -p 8790:8790 -e MG_OFFLINE=1 money-guardian
+          for i in $(seq 1 20); do curl -fs http://127.0.0.1:8790/healthz && break; sleep 1; done
+          curl -fs http://127.0.0.1:8790/ | grep -q "<title>Money Guardian</title>"
+          curl -fs -X POST "http://127.0.0.1:8790/api/chat?demo=ci000001" -H 'Content-Type: application/json' \
+            -d '{"session_id":"ci","text":"What bills do I have?"}' | grep -q "looks wrong"

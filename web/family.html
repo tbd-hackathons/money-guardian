@@ -34,11 +34,13 @@
   <div id="list"><p class="empty">No requests yet.</p></div>
 </div>
 <script>
+const demo = new URL(location.href).searchParams.get("demo");
+const q = /^[a-z0-9]{6,24}$/.test(demo || "") ? `?demo=${demo}` : "";
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 let last = "";
 async function load() {
   try {
-    const r = await fetch("/api/approvals"); const items = await r.json();
+    const r = await fetch(`/api/approvals${q}`); const items = await r.json();
     const key = JSON.stringify(items); if (key === last) return; last = key;
     const list = document.getElementById("list");
     if (!items.length) { list.innerHTML = '<p class="empty">No requests yet.</p>'; return; }
@@ -56,10 +58,10 @@ async function load() {
 document.addEventListener("click", async (e) => {
   const b = e.target.closest("button[data-id]"); if (!b) return;
   b.disabled = true;
-  await fetch(`/api/approvals/${encodeURIComponent(b.dataset.id)}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ decision: b.dataset.d }) });
+  await fetch(`/api/approvals/${encodeURIComponent(b.dataset.id)}${q}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ decision: b.dataset.d }) });
   last = ""; load();
 });
-load(); setInterval(load, 2000);
+load(); setInterval(load, 3000);
 </script>
 </body>
 </html>
