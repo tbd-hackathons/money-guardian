@@ -1,8 +1,9 @@
 // The voice assistant behind the Alexa+ simulator. It is an MCP client of our own /mcp endpoint,
-// exactly as Alexa+ would be. With ANTHROPIC_API_KEY set, Claude picks the tools; without it,
-// a small scripted router does, so judges can run the demo with no key at all.
+// exactly as Alexa+ would be. Claude picks the tools when it is configured (Amazon Bedrock or the
+// Claude API); otherwise a small scripted router does, so judges can run the demo with no key at all.
 
-import Anthropic from "@anthropic-ai/sdk";
+import Anthropic, { betaRefusalFallbackMiddleware, BetaFallbackState } from "@anthropic-ai/sdk";
+import { AnthropicBedrockMantle } from "@anthropic-ai/bedrock-sdk";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { household } from "./guard.js";
@@ -10,6 +11,7 @@ import { scanPitch } from "./redflags.js";
 import { findProduct } from "./products.js";
 
 const MODEL = process.env.MG_MODEL || "claude-opus-5-5";
+const FALLBACK = process.env.MG_FALLBACK_MODEL || "claude-opus-4-8"; // Bedrock only: used if MODEL declines
 const MAX_TURNS = 8; // budget cap: tool rounds per spoken request
 
 const SYSTEM = `You are Money Guardian, a voice assistant on an Alexa+ device for an older adult in the US.
@@ -23,7 +25,11 @@ Rules you never break:
 - You give information, not financial advice. Say so when you discuss an investment.
 - Do not repeat full account numbers. The last four digits are fine.`;
 
-export const mode = () => (process.env.ANTHROPIC_API_KEY ? "claude" : "scripted");
+// Where Claude runs. Amazon Bedrock when MG_BEDROCK_REGION is set: AWS credentials come from the
+// standard AWS chain (an IAM role when hosted), never from this repository. The Claude API when
+// ANTHROPIC_API_KEY is set. Neither: the scripted router.
+export const provider = () => (process.env.MG_BEDROCK_REGION ? "bedrock" : process.env.ANTHROPIC_API_KEY ? "anthropic" : null);
+export const mode = () => (provider() ? "claude" : "scripted");
 
 async function connect(mcpUrl) {
   const client = new Client({ name: "alexa-plus-simulator", version: "0.1.0" });
@@ -37,24 +43,44 @@ const sayOf = (result) => result.structuredContent?.say ?? result.content?.[0]?.
 
 // ---------- Claude mode ----------
 
-let anthropic;
-async function claudeTurn(client, history, text, trace) {
-  anthropic ||= new Anthropic();
+let ai;
+function claude() {
+  if (ai) return ai;
+  // MG_AI_BASE_URL and MG_AI_SKIP_AUTH exist for the tests, which run against a fake API on localhost.
+  const common = { baseURL: process.env.MG_AI_BASE_URL || undefined, maxRetries: 1, timeout: 30_000 }; // a voice reply can't wait long
+  if (provider() === "bedrock") {
+    // Server-side fallbacks are not available on Bedrock, so the SDK middleware retries a declined request on FALLBACK.
+    const onBedrock = (m) => (m.includes("anthropic.") ? m : `anthropic.${m}`);
+    ai = {
+      client: new AnthropicBedrockMantle({ ...common, awsRegion: process.env.MG_BEDROCK_REGION, skipAuth: process.env.MG_AI_SKIP_AUTH === "1",
+        middleware: [betaRefusalFallbackMiddleware([{ model: onBedrock(FALLBACK) }])] }),
+      model: onBedrock(MODEL), extra: {},
+    };
+  } else {
+    // Claude API: if the model declines, the API retries on a fallback model itself.
+    ai = { client: new Anthropic(common), model: MODEL, extra: { betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" } };
+  }
+  return ai;
+}
+
+async function claudeTurn(client, session, text, trace) {
+  const { client: api, model, extra } = claude();
+  const history = session.history;
+  session.fallbackState ||= new BetaFallbackState(); // Bedrock: stay on the fallback model once it was needed
   const { tools: mcpTools } = await client.listTools();
   const tools = mcpTools.map((t) => ({ name: t.name, description: t.description || t.title || t.name, input_schema: t.inputSchema }));
   history.push({ role: "user", content: text });
 
   for (let turn = 0; turn < MAX_TURNS; turn++) {
-    const response = await anthropic.beta.messages.create({
-      model: MODEL,
-      betas: ["server-side-fallback-2026-07-01"],
-      fallbacks: "default", // retry on a substitute model if the requested one declines
+    const response = await api.beta.messages.create({
+      model,
       max_tokens: 16000,
       output_config: { effort: "low" }, // voice: answer fast
       system: SYSTEM,
       tools,
       messages: history,
-    });
+      ...extra,
+    }, provider() === "bedrock" ? { fallbackState: session.fallbackState } : undefined);
     history.push({ role: "assistant", content: response.content });
 
     if (response.stop_reason === "refusal") return "I'm sorry, I can't help with that one.";
@@ -254,12 +280,26 @@ export async function chat({ sessionId, text, mcpUrl }) {
   const trace = [];
   const client = await connect(mcpUrl);
   try {
-    const reply = mode() === "claude" ? await claudeTurn(client, s.history, text, trace) : await scriptedTurn(client, s.state, text, trace);
+    let reply;
+    let used = mode();
+    if (used === "claude") {
+      const before = s.history.length;
+      try {
+        reply = await claudeTurn(client, s, text, trace);
+      } catch (e) {
+        // The AI is unreachable or misconfigured: answer with the scripted router rather than not at all.
+        // Drop this turn's partial history, so a tool call without its result never reaches the API again.
+        console.error(`Claude unavailable (${provider()}): ${e.status ?? ""} ${e.message}`);
+        s.history.length = before;
+        used = "scripted";
+      }
+    }
+    if (used === "scripted") reply = await scriptedTurn(client, s.state, text, trace);
     // Who is selling comes before what they said.
     const order = (x) => (x.tool === "check_seller" ? 0 : 1);
     const more = [...trace].sort((a, b) => order(a) - order(b)).map((x) => x.result?.more).filter(Boolean).join(" ");
     if (more) s.state.more = more;
-    return { reply, trace, mode: mode() };
+    return { reply, trace, mode: used };
   } finally {
     await client.close();
   }

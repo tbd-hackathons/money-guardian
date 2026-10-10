@@ -49,7 +49,9 @@ visitor (`MG_RATE_PER_MIN`); behind a proxy set `TRUST_PROXY=1`. `GET /healthz` 
 ### Modes
 
 - **Scripted (default).** A small router chooses the tools. Nothing to sign up for.
-- **Claude.** Set `ANTHROPIC_API_KEY` and Claude chooses the tools and phrases the reply (default model `claude-opus-5-5`, change with `MG_MODEL`). Server-side fallback is on: if the model declines a request, the API retries on a fallback model.
+- **Claude on Amazon Bedrock.** Set `MG_BEDROCK_REGION` (for example `us-east-1`) and Claude chooses the tools and phrases the reply. AWS credentials come from the standard AWS chain: an IAM role when hosted, `aws configure` on a laptop. Default model `claude-opus-5-5` (`MG_MODEL`); if it declines a request, the SDK retries on `claude-opus-4-8` (`MG_FALLBACK_MODEL`).
+- **Claude API.** Or set `ANTHROPIC_API_KEY`. Server-side fallback is on: if the model declines, the API retries on a fallback model.
+- **If the AI fails** (no access yet, network, a timeout), that turn is answered by the scripted router instead of an error. `GET /healthz` reports which AI is configured.
 
 In both modes the simulator is an MCP client of the server's own `/mcp` endpoint, the same way Alexa+ calls it.
 

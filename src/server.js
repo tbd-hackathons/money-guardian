@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { buildServer } from "./tools.js";
 import { listApprovals, decide, resetLedger } from "./guard.js";
-import { chat, resetSession, mode } from "./agent.js";
+import { chat, resetSession, mode, provider } from "./agent.js";
 import { treasuryBillYields } from "./sources.js";
 import { runWithDemo, cleanDemoId } from "./demo.js";
 
@@ -63,7 +63,7 @@ const app = http.createServer((req, res) => {
 
 async function handle(req, res, url) {
   try {
-    if (url.pathname === "/healthz") return send(res, 200, { ok: true, mode: mode() });
+    if (url.pathname === "/healthz") return send(res, 200, { ok: true, mode: mode(), ai: provider() });
     // Only requests that do work count; page loads and the approvals poll do not.
     if (req.method === "POST" && !allowed(req)) return send(res, 429, { error: "Too many requests. Please wait a minute." });
     if (url.pathname === "/mcp") {
@@ -84,9 +84,9 @@ async function handle(req, res, url) {
       const { session_id } = (await readBody(req)) || {};
       if (session_id) resetSession(session_id);
       resetLedger();
-      return send(res, 200, { ok: true, mode: mode() });
+      return send(res, 200, { ok: true, mode: mode(), ai: provider() });
     }
-    if (url.pathname === "/api/mode") return send(res, 200, { mode: mode() });
+    if (url.pathname === "/api/mode") return send(res, 200, { mode: mode(), ai: provider() });
     if (url.pathname === "/api/approvals" && req.method === "GET") return send(res, 200, listApprovals());
     if (url.pathname.startsWith("/api/approvals/") && req.method === "POST") {
       const id = url.pathname.split("/")[3];
