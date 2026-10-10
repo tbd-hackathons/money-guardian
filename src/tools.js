@@ -3,7 +3,7 @@
 import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { searchRegisters, treasuryBillYields, fdicBank, ATTRIBUTION } from "./sources.js";
-import { scanPitch, claimedRate } from "./redflags.js";
+import { scanPitch, claimedReturn } from "./redflags.js";
 import { PRODUCTS, findProduct } from "./products.js";
 import { reviewBill, requestApproval, approvalStatus, payBill, household } from "./guard.js";
 
@@ -64,11 +64,12 @@ export function buildServer() {
     annotations: { readOnlyHint: true, openWorldHint: true },
   }, async ({ pitch }) => {
     const scan = scanPitch(pitch);
-    const rate = claimedRate(pitch);
+    const promised = claimedReturn(pitch);
+    const rate = promised?.annual_pct ?? null;
     const y = await bestBillYield();
     const top = scan.flags.filter((f) => f.id !== "high_return").slice(0, 2).map((f) => f.short);
     const list = top.length > 1 ? `${top[0]} and ${top[1]}` : top[0] || "a return far above safe rates";
-    const vsSafe = rate != null && rate > 8 && y.top ? ` They promised ${rate}%; safe Treasury bills pay about ${y.top.yield_pct.toFixed(1)}%.` : "";
+    const vsSafe = rate != null && rate > 8 && y.top ? ` They promised ${promised.heard === `${rate}%` ? `${rate}%` : `${promised.heard}, about ${rate}% a year`}; safe Treasury bills pay about ${y.top.yield_pct.toFixed(1)}%.` : "";
     const say = scan.level === "high" ? `This sounds like a scam: ${list}.${vsSafe}`
       : scan.level === "medium" || scan.level === "low" ? `One thing worries me: ${list}. Let's check who is selling it first.`
       : "I didn't hear the usual warning signs. Let's still check who is selling it.";

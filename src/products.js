@@ -58,6 +58,8 @@ export function findProduct(text) {
   const t = text.toLowerCase();
   // Longest alias first, so "variable annuity" wins over "annuity".
   const all = Object.entries(PRODUCTS).flatMap(([id, p]) => p.aliases.map((a) => [a, id])).sort((a, b) => b[0].length - a[0].length);
-  const hit = all.find(([a]) => new RegExp(`\\b${a.replace(/[-\s]/g, "[-\\s]?")}\\b`).test(t));
+  // Plurals too: "CDs", "annuities", "bonds".
+  const plural = (a) => (a.endsWith("y") ? `${a.slice(0, -1)}(?:y|ies)` : `${a}s?`);
+  const hit = all.find(([a]) => new RegExp(`\\b${plural(a.replace(/[-\s]/g, "[-\\s]?"))}\\b`).test(t));
   return hit ? hit[1] : null;
 }
