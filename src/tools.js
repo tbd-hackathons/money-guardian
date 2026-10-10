@@ -9,6 +9,8 @@ import { reviewBill, requestApproval, approvalStatus, payBill, household } from 
 
 const spokenDate = (ymd) => new Date(`${ymd}T12:00:00Z`).toLocaleDateString("en-US", { month: "long", day: "numeric", timeZone: "UTC" });
 
+const shortPayee = (name) => String(name).replace(/\s+(Co\.|Company|Inc\.?|LLC)$/i, "");
+
 const NOT_ADVICE = "This is general information to help you check, not financial advice.";
 
 const reply = (say, data) => ({
@@ -35,18 +37,24 @@ export function buildServer() {
     inputSchema: { name: z.string().min(2).describe("Seller's name as the person heard it"), kind: z.enum(["individual", "firm", "any"]).default("any") },
     annotations: { readOnlyHint: true, openWorldHint: true },
   }, async ({ name, kind }) => {
-    const { matches, errors } = await searchRegisters(name, kind);
+    const { matches, similar = [], errors } = await searchRegisters(name, kind);
+    const facts = { matches, similar, errors, attribution: ATTRIBUTION };
     if (errors.length && !matches.length) {
-      return reply(`I could not reach the registers just now, so I can't say whether ${name} is registered. Please don't decide until we can check.`, { status: "unreadable", errors, attribution: ATTRIBUTION });
+      return reply(`I couldn't reach the registers, so I can't check ${name} yet.`,
+        { status: "unreadable", more: `The FINRA and SEC registers did not answer, so please don't decide until we can check. (${errors.join("; ")})`, ...facts });
     }
     if (!matches.length) {
-      return reply(`I found no one named ${name} registered to sell investments or give investment advice in the US. Selling securities without registration is illegal. Please do not send money.`, { status: "not_found", matches, errors, attribution: ATTRIBUTION });
+      return reply(`${name} is not registered to sell investments.`,
+        { status: "not_found", more: `Neither FINRA nor the SEC has anyone by that name${similar.length ? `; the closest was a different person, ${similar[0].name}` : ""}. Selling investments without registration is against the law.`, ...facts });
     }
     const flagged = matches.filter((m) => m.has_disclosures);
-    const say = matches.length > 1
-      ? `I found ${matches.length} registered people or firms with that name. Ask the seller for their CRD number so we check the right one.${flagged.length ? ` ${flagged.length} of them have disclosures, such as complaints or regulatory actions.` : ""}`
-      : `${matches[0].name} is registered (CRD ${matches[0].crd}).${matches[0].has_disclosures ? " Their record has disclosures, such as complaints or regulatory actions. Read them before deciding." : " Their record shows no disclosures."}`;
-    return reply(say, { status: "found", matches, errors, attribution: ATTRIBUTION });
+    if (matches.length > 1) {
+      return reply(`There are ${matches.length} registered people or firms called ${name}. Ask for their CRD number so I can check the right one.`,
+        { status: "several", more: `${flagged.length ? `${flagged.length} of them have disclosures, such as complaints or regulatory actions. ` : ""}A CRD number is the ID FINRA gives every registered person. A real professional will tell you theirs.`, ...facts });
+    }
+    const m = matches[0];
+    return reply(`${m.name} is registered, CRD ${m.crd}. ${m.has_disclosures ? "Their record shows complaints or actions, so read it first." : "Their record shows no complaints."}`,
+      { status: "found", more: `Registered with ${m.registers.join(" and ")}${m.current_firms?.length ? `, working for ${m.current_firms.join(", ")}` : ""}. Being registered does not make an offer a good one; check what they are selling too.`, ...facts });
   });
 
   server.registerTool("check_pitch", {
@@ -58,12 +66,20 @@ export function buildServer() {
     const scan = scanPitch(pitch);
     const rate = claimedRate(pitch);
     const y = await bestBillYield();
-    const parts = [];
-    if (scan.flags.length) parts.push(`I heard ${scan.flags.length} warning sign${scan.flags.length > 1 ? "s" : ""}: ${scan.flags.map((f) => f.label.toLowerCase()).join("; ")}.`);
-    if (rate != null && y.top) parts.push(`They promised ${rate}%. A US Treasury bill, which is backed by the government, paid about ${y.top.yield_pct.toFixed(2)}% at its latest sale, on ${spokenDate(y.top.auction_date)}. Anything far above that carries real risk, whatever they say.`);
-    if (scan.level === "high") parts.push("This matches how investment scams usually sound. Please don't send money, and let's tell your family.");
-    if (!parts.length) parts.push("I didn't hear the usual warning signs. It's still worth checking the seller's registration before you decide.");
-    return reply(`${parts.join(" ")} ${NOT_ADVICE}`, { risk: scan.level, flags: scan.flags, claimed_rate_pct: rate, treasury: y });
+    const top = scan.flags.filter((f) => f.id !== "high_return").slice(0, 2).map((f) => f.short);
+    const list = top.length > 1 ? `${top[0]} and ${top[1]}` : top[0] || "a return far above safe rates";
+    const vsSafe = rate != null && rate > 8 && y.top ? ` They promised ${rate}%; safe Treasury bills pay about ${y.top.yield_pct.toFixed(1)}%.` : "";
+    const say = scan.level === "high" ? `This sounds like a scam: ${list}.${vsSafe}`
+      : scan.level === "medium" || scan.level === "low" ? `One thing worries me: ${list}. Let's check who is selling it first.`
+      : "I didn't hear the usual warning signs. Let's still check who is selling it.";
+    const rest = scan.flags.filter((f) => !top.includes(f.short) && f.id !== "high_return").map((f) => f.short);
+    const more = [
+      rate != null && y.top ? `A US Treasury bill paid ${y.top.yield_pct.toFixed(2)}% at its latest sale, on ${spokenDate(y.top.auction_date)}. A promise far above that is not safe, whatever they say.` : "",
+      y.error ? "I couldn't read today's Treasury rate." : "",
+      rest.length ? `I also heard ${rest.join(" and ")}.` : "",
+      NOT_ADVICE,
+    ].filter(Boolean).join(" ");
+    return reply(say, { risk: scan.level, flags: scan.flags, claimed_rate_pct: rate, treasury: y, more });
   });
 
   server.registerTool("explain_product", {
@@ -73,11 +89,17 @@ export function buildServer() {
     annotations: { readOnlyHint: true, openWorldHint: true },
   }, async ({ product }) => {
     const id = findProduct(product);
-    if (!id) return reply(`I don't have a plain explanation for "${product}" yet. I can explain Treasury bills, CDs, fixed or variable annuities, and bonds.`, { known: Object.keys(PRODUCTS) });
+    if (!id) return reply(`I can explain Treasury bills, CDs, annuities and bonds. Which one?`, { known: Object.keys(PRODUCTS) });
     const p = PRODUCTS[id];
     const y = await bestBillYield();
-    const rateLine = y.top ? ` For comparison, a ${y.top.term} Treasury bill paid about ${y.top.yield_pct.toFixed(2)}% at its latest sale, on ${spokenDate(y.top.auction_date)}.` : "";
-    return reply(`${p.name}: ${p.plain} The main risk: ${p.risks[0]} A good question to ask: ${p.ask[0]}${rateLine} ${NOT_ADVICE}`, { product: { id, ...p }, treasury: y });
+    const more = [
+      `It suits ${p.good_for.charAt(0).toLowerCase() + p.good_for.slice(1)}`,
+      `Before you buy, ask: ${p.ask[0]}`,
+      y.top ? `For comparison, a Treasury bill paid ${y.top.yield_pct.toFixed(2)}% at its latest sale.` : "",
+      NOT_ADVICE,
+    ].filter(Boolean).join(" ");
+    const plainName = p.name.replace(/ \(.*\)$/, "").replace(/^(Fixed|Variable|Certificate|Bond)/, (w) => w.toLowerCase());
+    return reply(`A ${plainName} is ${p.short}`, { product: { id, ...p }, treasury: y, more });
   });
 
   server.registerTool("check_bank", {
@@ -104,10 +126,19 @@ export function buildServer() {
     if (!bill_id) {
       const bills = household().pending_bills.map((b) => reviewBill(b.id));
       const holds = bills.filter((b) => b.verdict === "hold");
-      return reply(`You have ${bills.length} bills due. ${holds.length ? `${holds.length} looks unusual: ${holds.map((b) => b.payee).join(", ").replace(/\.$/, "")}.` : "They all look normal."}`, { bills });
+      const say = holds.length
+        ? `You have ${bills.length} bills due. The ${holds.map((b) => shortPayee(b.payee)).join(" and ")} bill looks wrong, so I'd hold it.`
+        : `You have ${bills.length} bills due, and they all look normal.`;
+      return reply(say, { bills, more: bills.map((b) => `${b.payee}: $${b.amount_usd.toFixed(2)}, due ${spokenDate(b.due)}. ${b.reasons.join(" ") || "Looks normal."}`).join(" ") });
     }
     const r = reviewBill(bill_id);
-    return reply(r.error || (r.verdict === "hold" ? `Let's not pay this yet. ${r.reasons.join(" ")} ${r.next_step}` : `${r.payee}, $${r.amount_usd.toFixed(2)}, looks normal.`), r);
+    if (r.error) return reply(r.error, r);
+    if (r.verdict !== "hold") return reply(`${shortPayee(r.payee)}, $${r.amount_usd.toFixed(2)}, looks normal.`, r);
+    const why = [];
+    if (r.usual_amount_usd && r.amount_usd > r.usual_amount_usd * 2) why.push(`it's ${(r.amount_usd / r.usual_amount_usd).toFixed(1)} times the usual amount`);
+    if (r.reasons.some((x) => /account to pay changed/.test(x))) why.push(`the account changed${r.reasons.some((x) => /by a message/.test(x)) ? " by email" : ""}`);
+    if (!why.length) why.push("it's over your approval limit");
+    return reply(`Let's not pay this yet: ${why.join(", and ")}.`, { ...r, more: `${r.reasons.join(" ")} ${r.next_step}` });
   });
 
   server.registerTool("request_family_approval", {

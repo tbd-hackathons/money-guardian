@@ -11,9 +11,9 @@ const MODEL = process.env.MG_MODEL || "claude-opus-5-5";
 const MAX_TURNS = 8; // budget cap: tool rounds per spoken request
 
 const SYSTEM = `You are Money Guardian, a voice assistant on an Alexa+ device for an older adult in the US.
-Speak in short, warm, plain sentences. Two to four sentences per reply. No lists, no markdown: this is read aloud.
+Speak in short, warm, plain sentences: at most two sentences, about 35 words. No lists, no markdown: this is read aloud.
 You help the person check investment offers and pay household bills safely. Use the tools; never guess facts.
-Each tool result has a "say" field written for the listener. Build your reply from it; keep its warnings.
+Each tool result has a "say" field written for the listener; build your reply from it and keep its warnings. Its "more" field holds the details: use it only when the person asks why or wants more.
 Rules you never break:
 - Never pay a bill whose review says "hold" until the family request for it is approved. If blocked, offer to ask the trusted contact.
 - Never pay a bill twice. If a payment is "maybe_paid", tell the person to check with the payee.
@@ -94,13 +94,21 @@ function whichBill(text) {
 }
 
 function sellerName(text) {
-  const m = text.match(/\b(?:named|called|from|man|woman|guy|lady|advisor|adviser|broker|company|firm)\s+(?:is\s+|was\s+)?([A-Z][\w.&'-]*(?:\s+[A-Z][\w.&'-]*){0,3})/);
+  const NAME = "([A-Z][\\w.&'-]*(?:\\s+[A-Z][\\w.&'-]*){0,3})";
+  const m = text.match(new RegExp(`\\b(?:named|called|from|man|woman|guy|lady|advisor|adviser|broker|company|firm)\\s+(?:is\\s+|was\\s+)?${NAME}`))
+    // "Is Rex Halvorsen registered?", "Check Victor Langston": two capitalised words in a row
+    || text.match(/\b(?:[Ii]s|[Cc]heck|[Ll]ook up|[Aa]bout)\s+([A-Z][\w'-]+(?:\s+[A-Z][\w'-]+){1,3})/);
   return m ? m[1].replace(/[.,]$/, "") : null;
 }
 
 async function scriptedTurn(client, state, text, trace) {
   const t = text.toLowerCase();
   const contact = household().trusted_contact.name;
+
+  // Details of the last answer, only when asked.
+  if (/^(tell me more|more|why|why\?|why not|what do you mean|details|say more|explain that)\b/.test(t) || /\b(tell me more|why is that)\b/.test(t)) {
+    return state.more || "That's all I have on it.";
+  }
 
   // Did the family answer?
   if (/\b(answer|answered|reply|replied|approve[ds]?|say yes|said)\b/.test(t) && state.approval_id && /\b(did|has|have|what)\b/.test(t)) {
@@ -144,7 +152,7 @@ async function scriptedTurn(client, state, text, trace) {
     const hold = r.bills?.find((b) => b.verdict === "hold");
     if (hold) {
       Object.assign(state, { held_bill: hold.bill_id, held_offer: null, held_reasons: hold.reasons, held_amount: hold.amount_usd, held_summary: `${hold.payee} bill, $${hold.amount_usd.toFixed(2)}, due ${dmy(hold.due)}`, offer: null });
-      return `${r.say} ${hold.reasons[0]} I'd hold that one.`;
+      return r.say;
     }
     return r.say;
   }
@@ -166,18 +174,19 @@ async function scriptedTurn(client, state, text, trace) {
       call(client, trace, "check_pitch", { pitch: text }),
       name ? call(client, trace, "check_seller", { name }) : null,
     ]);
-    parts.push(p.say);
     if (seller) parts.push(seller.say);
-    if (p.risk === "high") {
-      Object.assign(state, { held_offer: "offer-" + (name || "unknown").toLowerCase().replace(/\W+/g, "-"), held_bill: null, held_reasons: p.flags.map((f) => f.label), held_amount: null, held_summary: `Investment offer${name ? ` from ${name}` : ""}: "${text.slice(0, 160)}"`, offer: "ask" });
-      parts.push(`Would you like me to tell ${contact}?`);
+    parts.push(p.say);
+    if (p.risk === "high" || seller?.status === "not_found") {
+      Object.assign(state, { held_offer: "offer-" + (name || "unknown").toLowerCase().replace(/\W+/g, "-"), held_bill: null, held_reasons: [...(seller?.status === "not_found" ? [`${name} is not registered to sell investments`] : []), ...p.flags.map((f) => f.label)], held_amount: null, held_summary: `Investment offer${name ? ` from ${name}` : ""}: "${text.slice(0, 160)}"`, offer: "ask" });
+      parts.push(`Please don't send money. Shall I tell ${contact}?`);
     }
     return parts.join(" ");
   }
 
   // A name on its own: check registration.
   if (/\b(check|look up|is .* (real|registered|legit))\b/.test(t)) {
-    const name = sellerName(text) || text.replace(/^.*?\b(check|look up)\b\s*/i, "").replace(/[?.!]$/, "");
+    const name = sellerName(text);
+    if (!name) return "Who should I look up? Tell me their full name.";
     return (await call(client, trace, "check_seller", { name })).say;
   }
 
@@ -196,6 +205,10 @@ export async function chat({ sessionId, text, mcpUrl }) {
   const client = await connect(mcpUrl);
   try {
     const reply = mode() === "claude" ? await claudeTurn(client, s.history, text, trace) : await scriptedTurn(client, s.state, text, trace);
+    // Who is selling comes before what they said.
+    const order = (x) => (x.tool === "check_seller" ? 0 : 1);
+    const more = [...trace].sort((a, b) => order(a) - order(b)).map((x) => x.result?.more).filter(Boolean).join(" ");
+    if (more) s.state.more = more;
     return { reply, trace, mode: mode() };
   } finally {
     await client.close();

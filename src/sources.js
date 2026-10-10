@@ -21,6 +21,7 @@ async function fetchJson(url) {
 }
 
 async function getJson(url, { throttleMs = 0 } = {}) {
+  if (process.env.MG_OFFLINE === "1") throw new Error("offline mode (MG_OFFLINE=1)");
   const hit = cache.get(url);
   if (hit && Date.now() - hit.at < TTL_MS) return hit.value;
   if (throttleMs) {
@@ -51,7 +52,7 @@ const BROKERCHECK = "https://api.brokercheck.finra.org/search";
 const IAPD = "https://api.adviserinfo.sec.gov/search";
 
 function registerUrl(base, kind, query) {
-  const q = new URLSearchParams({ query, hl: "true", nrows: "5", start: "0", r: "25", sort: "score+desc", wt: "json" });
+  const q = new URLSearchParams({ query, hl: "true", nrows: "12", start: "0", r: "25", sort: "score+desc", wt: "json" });
   return `${base}/${kind}?${q}`;
 }
 
@@ -66,6 +67,7 @@ function personRow(s) {
     adviser_status: s.ind_ia_scope || "unknown",
     has_disclosures: s.ind_bc_disclosure_fl === "Y" || s.ind_ia_disclosure_fl === "Y",
     current_firms: employers,
+    other_names: s.ind_other_names || [],
     profile_url: `https://brokercheck.finra.org/individual/summary/${s.ind_source_id}`,
   };
 }
@@ -81,6 +83,23 @@ function firmRow(s) {
     other_names: s.firm_other_names || [],
     profile_url: `https://brokercheck.finra.org/firm/summary/${s.firm_source_id}`,
   };
+}
+
+// Words that do not identify anyone: "Mr", "LLC", "and"... A firm's "Capital" or "Partners" do count.
+const FILLER = new Set(["mr", "mrs", "ms", "dr", "the", "and", "of", "inc", "llc", "co", "corp", "ltd", "lp", "&"]);
+const words = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter((w) => w && !FILLER.has(w));
+
+/**
+ * The registers search loosely: "Rex Halvorsen" also returns a REBECCA WITTROCK.
+ * A row is a match only if every word the person heard is in its name, or in a name it used before.
+ */
+export function nameMatches(query, row) {
+  const q = words(query);
+  if (!q.length) return false;
+  return [row.name, ...(row.other_names || [])].some((n) => {
+    const have = new Set(words(n));
+    return q.every((w) => have.has(w));
+  });
 }
 
 /** Look a seller up in FINRA BrokerCheck (brokers) and SEC IAPD (advisers). */
@@ -107,7 +126,9 @@ export async function searchRegisters(name, kind = "any") {
     const prev = byCrd.get(key);
     byCrd.set(key, prev ? { ...prev, registers: [...new Set([...prev.registers, row.register])] } : { ...row, registers: [row.register] });
   }
-  return { matches: [...byCrd.values()].map(({ register, ...r }) => r), errors };
+  const rows = [...byCrd.values()].map(({ register, ...r }) => r);
+  // "similar" are the register's loose hits: shown for transparency, never treated as the seller.
+  return { matches: rows.filter((r) => nameMatches(name, r)), similar: rows.filter((r) => !nameMatches(name, r)), errors };
 }
 
 /** Latest Treasury bill auction yields: what a new buyer actually earns, risk-free. */

@@ -1,3 +1,4 @@
+import { nameMatches } from "../src/sources.js";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
@@ -44,4 +45,12 @@ test("product lookup prefers the specific product", () => {
   assert.equal(findProduct("an annuity"), "fixed_annuity");
   assert.equal(findProduct("T-bills"), "treasury_bill");
   assert.equal(findProduct("crypto"), null);
+});
+
+test("a register row counts only if every heard word is in its name or a former name", () => {
+  assert.equal(nameMatches("Rex Halvorsen", { name: "REBECCA WITTROCK", other_names: ["Rebecca Halvorsen"] }), false);
+  assert.equal(nameMatches("John Carter", { name: "JOHN ALLEN CARTER" }), true);
+  assert.equal(nameMatches("Mr. John Carter", { name: "JOHN ALLEN CARTER" }), true);
+  assert.equal(nameMatches("Sterling Ridge Capital Partners", { name: "BAY RIDGE CAPITAL PARTNERS, LLC" }), false);
+  assert.equal(nameMatches("Ann Lee", { name: "ANN SMITH", other_names: ["ANN LEE"] }), true);
 });

@@ -3,6 +3,7 @@
 
 export const PRODUCTS = {
   treasury_bill: {
+    short: "a short loan to the US government, from 4 weeks to a year. It is about as safe as it gets, but the rate is fixed.",
     name: "Treasury bill (T-bill)",
     aliases: ["t-bill", "t bill", "treasury bill", "treasury", "t-bills"],
     plain: "A short loan to the US government, from 4 weeks to 1 year. You buy it below face value and get the full amount back at the end.",
@@ -12,6 +13,7 @@ export const PRODUCTS = {
     learn_more: "https://www.treasurydirect.gov/marketable-securities/treasury-bills/",
   },
   cd: {
+    short: "money you leave at a bank for a set time at a fixed rate, insured by the FDIC up to $250,000. Taking it out early costs a penalty.",
     name: "Certificate of deposit (CD)",
     aliases: ["cd", "certificate of deposit", "certificate"],
     plain: "You leave money at a bank for a set time and get a fixed rate. Insured by the FDIC up to $250,000 per bank, per owner.",
@@ -21,6 +23,7 @@ export const PRODUCTS = {
     learn_more: "https://www.investor.gov/introduction-investing/investing-basics/investment-products/certificates-deposit-cds",
   },
   fixed_annuity: {
+    short: "a contract with an insurance company that pays a set rate or income. It is not FDIC-insured, and leaving early often costs a surrender charge for 7 to 10 years.",
     name: "Fixed annuity",
     aliases: ["annuity", "fixed annuity", "income annuity"],
     plain: "A contract with an insurance company. You pay in, and it promises a set rate or a stream of income. It is not FDIC-insured; the promise depends on the insurer.",
@@ -30,6 +33,7 @@ export const PRODUCTS = {
     learn_more: "https://www.investor.gov/introduction-investing/investing-basics/investment-products/insurance-products/annuities",
   },
   variable_annuity: {
+    short: "an insurance contract whose value rises and falls with the investments inside. Fees often reach 2 to 3 percent a year, and you can lose money.",
     name: "Variable annuity",
     aliases: ["variable annuity"],
     plain: "An insurance contract whose value goes up and down with the investments inside it, usually funds that hold stocks and bonds.",
@@ -39,6 +43,7 @@ export const PRODUCTS = {
     learn_more: "https://www.investor.gov/introduction-investing/investing-basics/investment-products/insurance-products/variable-annuities",
   },
   bond: {
+    short: "a loan to a company or government that pays interest. When rates rise, its price falls.",
     name: "Bond or bond fund",
     aliases: ["bond", "bonds", "bond fund", "corporate bond", "municipal bond"],
     plain: "A loan to a company or government that pays interest. A bond fund holds many bonds and its price moves every day.",

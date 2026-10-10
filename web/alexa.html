@@ -102,7 +102,8 @@ let sessionId = (() => { try { return sessionStorage.getItem("mg-session") || ne
 function newId() { const id = Math.random().toString(36).slice(2, 10); try { sessionStorage.setItem("mg-session", id); } catch {} return id; }
 
 const DEMO = [
-  "A man named John Carter called me. He says I'm guaranteed 18% a year, but only today, and I should keep it between us.",
+  "A man named Victor Langston called me. He says I'm guaranteed 18% a year, but only today, and I should keep it between us.",
+  "Tell me more.",
   "Yes, tell Anna.",
   "What is an annuity?",
   "What bills do I have?",
@@ -132,6 +133,8 @@ function facts(r) {
   if (r.treasury?.top) out.push(`<span class="pill">T-bill ${r.treasury.top.term}: ${r.treasury.top.yield_pct.toFixed(2)}% (${esc(r.treasury.top.auction_date)})</span>`);
   for (const f of r.flags || []) out.push(`<div>⚠ ${esc(f.label)}: “${esc(f.heard.join("”, “"))}” <a href="${esc(f.source_url)}" target="_blank" rel="noopener">source</a></div>`);
   for (const m of (r.matches || []).slice(0, 3)) out.push(`<div>${esc(m.name)} · CRD ${esc(m.crd)} · ${m.has_disclosures ? "has disclosures" : "no disclosures"} <a href="${esc(m.profile_url)}" target="_blank" rel="noopener">record</a></div>`);
+  if (r.status === "not_found") out.push(`<div>No one by that name in FINRA BrokerCheck or the SEC adviser register.</div>`);
+  for (const m of (r.similar || []).slice(0, 2)) out.push(`<div class="args">≠ ${esc(m.name)} (CRD ${esc(m.crd)}): register's loose match, a different person</div>`);
   for (const b of r.bills || []) out.push(`<div>${esc(b.payee)} $${b.amount_usd.toFixed(2)} → <b>${esc(b.verdict)}</b></div>`);
   for (const x of r.reasons || []) out.push(`<div>· ${esc(x)}</div>`);
   if (r.confirmation) out.push(`<div>Confirmation ${esc(r.confirmation)}</div>`);

@@ -6,13 +6,17 @@ In 2025, Americans aged 60 and over reported US$7.75 billion in losses to the FB
 
 ## What it does
 
-Margaret, 78, says: *"A man named John Carter called me. He says I'm guaranteed 18% a year, but only today, and I should keep it between us."*
+Margaret, 78, says: *"A man named Victor Langston called me. He says I'm guaranteed 18% a year, but only today, and I should keep it between us."*
 
-Money Guardian:
+Money Guardian answers in one breath:
+
+> Victor Langston is not registered to sell investments. This sounds like a scam: a guaranteed return and a request for secrecy. They promised 18%; safe Treasury bills pay about 4.6%. Please don't send money. Shall I tell Anna?
+
+Behind that answer:
 
 1. **Hears the red flags** the regulators warn about: a guaranteed return, pressure to act now, secrecy. Each flag links to the FINRA or SEC page it comes from.
-2. **Compares the promise with a safe rate.** It reads the latest Treasury bill auction results from TreasuryDirect: "They promised 18%. A US Treasury bill paid about 4.62% at its latest sale, on September 29."
-3. **Checks the seller** in FINRA BrokerCheck and the SEC adviser register. If nobody with that name is registered, it says so.
+2. **Compares the promise with a safe rate.** It reads the latest Treasury bill auction results from TreasuryDirect, live.
+3. **Checks the seller** in FINRA BrokerCheck and the SEC adviser register. The registers search loosely ("Rex Halvorsen" also returns a Rebecca Wittrock), so a result counts only when every word of the name Margaret heard is in that person's name or a former name. Anything else is shown as "a different person", never as the seller.
 4. **Asks Anna**, her daughter, on Anna's own phone. Nothing goes ahead until Anna answers.
 
 It does the same for bills. The October power bill is 3.9 times the usual amount, and the account to pay was changed by email. Money Guardian holds it, asks Anna, and pays only after she approves. It never pays the same bill twice.
@@ -56,11 +60,12 @@ Endpoint: `POST /mcp` (Streamable HTTP, stateless, spec 2025-11-25).
 
 ## How it stays safe
 
-- **A failed check is not a pass.** If a register or rate source cannot be read, the reply says "I could not check", never "it looks fine".
+- **A failed check is not a pass.** If a register cannot be read, the reply says "I couldn't reach the registers", never "not registered" or "it looks fine" (a test enforces it).
 - **Money counts once it is confirmed.** A payment is recorded as "paying", then "paid" with a confirmation. If it stops between the two, the next attempt reports "maybe paid" and does not pay again.
 - **The assistant cannot approve its own request.** Approving is not an MCP tool; only Anna's page calls the approval API. In this demo that page has no login, and the server listens on 127.0.0.1 only. A real deployment needs Anna to sign in.
 - **Budget cap.** At most 8 tool rounds per spoken request.
-- **Not advice.** Every investment reply says it is general information, not financial advice.
+- **Short answers, details on request.** Spoken answers stay under 40 words (a test enforces it). "Tell me more" gives the details and the sources.
+- **Not advice.** Product explanations and the details of every investment check say they are general information, not financial advice.
 
 ## Data and attribution
 
