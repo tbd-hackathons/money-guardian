@@ -72,7 +72,7 @@ Endpoint: `POST /mcp` (Streamable HTTP, stateless, spec 2025-11-25).
 
 - **A failed check is not a pass.** If a register cannot be read, the reply says "I couldn't reach the registers", never "not registered" or "it looks fine" (a test enforces it).
 - **Money counts once it is confirmed.** A payment is recorded as "paying", then "paid" with a confirmation. If it stops between the two, the next attempt reports "maybe paid" and does not pay again.
-- **The assistant cannot approve its own request.** Approving is not an MCP tool; only Anna's page calls the approval API. In this demo that page has no login, and the server listens on 127.0.0.1 only. A real deployment needs Anna to sign in.
+- **The assistant cannot approve its own request.** Approving is not an MCP tool; only Anna's page calls the approval API. In this demo that page has no login: anyone holding a demo's link can answer for Anna, but only inside that one demo household. On a laptop the server listens on 127.0.0.1 only. A real deployment needs Anna to sign in.
 - **Budget cap.** At most 8 tool rounds per spoken request.
 - **Short answers, details on request.** Spoken answers stay under 40 words (a test enforces it). "Tell me more" gives the details and the sources.
 - **Not advice.** Product explanations and the details of every investment check say they are general information, not financial advice.
