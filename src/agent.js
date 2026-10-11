@@ -9,6 +9,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { household } from "./guard.js";
 import { scanPitch } from "./redflags.js";
 import { findProduct } from "./products.js";
+import { internalToken } from "./oauth.js";
 
 const MODEL = process.env.MG_MODEL || "claude-opus-5-5";
 const FALLBACK = process.env.MG_FALLBACK_MODEL || "claude-opus-4-8"; // Bedrock only: used if MODEL declines
@@ -33,7 +34,8 @@ export const mode = () => (provider() ? "claude" : "scripted");
 
 async function connect(mcpUrl) {
   const client = new Client({ name: "alexa-plus-simulator", version: "0.1.0" });
-  await client.connect(new StreamableHTTPClientTransport(new URL(mcpUrl)));
+  // The simulator stands in for Alexa+ on this same server, so it carries the server's own token.
+  await client.connect(new StreamableHTTPClientTransport(new URL(mcpUrl), { requestInit: { headers: { Authorization: `Bearer ${internalToken()}` } } }));
   return client;
 }
 

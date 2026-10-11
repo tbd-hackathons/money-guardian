@@ -55,6 +55,17 @@ visitor (`MG_RATE_PER_MIN`); behind a proxy set `TRUST_PROXY=1`. `GET /healthz` 
 
 In both modes the simulator is an MCP client of the server's own `/mcp` endpoint, the same way Alexa+ calls it.
 
+### Connecting Alexa+ (OAuth)
+
+Set the `MG_OAUTH_*` values, `MG_HOUSEHOLD_PASSCODE`, `MG_PUBLIC_URL` and `MG_LINK_SECRET` (see `.env.example`) and `/mcp` asks for a token, as the Alexa+ MCP toolkit expects:
+
+- **Service token** (`client_credentials`, scope `mcp:service`, one hour, no refresh token). Alexa+ uses it to list the tools and to run the public checks: a pitch, a seller, a bank, a product.
+- **Account linking** (`authorization_code` with PKCE S256, scope `mcp:tools`). The household's own tools (bills, approvals, payments) answer `401` to a service token, and Alexa+ then offers linking. The family enters the household passcode once in the Alexa app; each access token comes with a refresh token, which works once and is replaced.
+- Discovery at `/.well-known/oauth-protected-resource` and `/.well-known/oauth-authorization-server`. No dynamic client registration and no `WWW-Authenticate` header, as Alexa+ requires.
+- Five wrong passcodes lock that address out for 15 minutes. Redirects go only to the URIs registered in `MG_OAUTH_REDIRECT_URIS`.
+
+Without these settings `/mcp` stays open, which is how the simulator and local tests run. With them, the simulator on the same server still works: it uses a token that never leaves the process.
+
 ## MCP tools
 
 Endpoint: `POST /mcp` (Streamable HTTP, stateless, spec 2025-11-25).
