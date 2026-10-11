@@ -142,7 +142,7 @@ Endpoint: `POST /mcp` (Streamable HTTP, stateless, spec 2025-11-25).
 - SEC Investment Adviser Public Disclosure, from the SEC's daily [compilation files](https://adviserinfo.sec.gov/compilation): every investment adviser representative and adviser firm (441,534 people and 43,727 firms on 10 Oct 2026). `scripts/build-sec-index.mjs` reduces the three files (about 190 MB compressed) to `registers/sec-iapd.tsv.gz` (12 MB): name, other names, CRD, current firms, disclosures, status. A lookup takes under a millisecond and never touches the SEC's site. To refresh, download the latest files listed in the [manifest](https://reports.adviserinfo.sec.gov/reports/CompilationReports/CompilationReports.manifest.json) and run the script on them.
 - TreasuryDirect auction results (`TA_WS/securities/auctioned`). The rate shown is the investment rate at the latest auction for each term.
 - FDIC BankFind Suite API.
-- Regulator warnings: Tavily Search, restricted to 22 official regulator domains (`src/warnings.js`), with exact-name matching. A seller's name is sent to Tavily only when a Tavily key or keyless mode is set. Results are cached for 6 hours.
+- Regulator warnings: Tavily Search, restricted to 22 official regulator domains (`src/warnings.js`), with exact-name matching. A seller's name is sent to Tavily only when a Tavily key or keyless mode is set. A warning found is cached for 6 hours; "nothing found" is not cached, so a search that missed by chance is tried again on the next ask.
 - Red-flag wording comes from FINRA's "Red Flags of Fraud" and the SEC investor alerts linked in `src/redflags.js`.
 
 The household in `fixtures/household.json` is fictional. Payments are simulated: there is no bank connection.

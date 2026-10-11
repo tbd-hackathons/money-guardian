@@ -46,7 +46,9 @@ function onePageFor(name, url) {
 }
 
 const TAVILY = () => process.env.MG_TAVILY_URL || "https://api.tavily.com";
-const TTL_MS = 6 * 3600e3; // warning lists change slowly; a repeat ask costs no search credits
+// A warning is kept for 6 hours: warning lists change slowly, and a repeat ask costs no search credits.
+// "Nothing found" is not kept: a live search once missed a listed firm, and a kept miss would hide the warning for hours.
+const TTL_MS = 6 * 3600e3;
 const cache = new Map();
 const inflight = new Map();
 
@@ -106,7 +108,9 @@ async function judge(name, pages, ai) {
     const quote = String(v.quote || "").slice(0, 300);
     const onPage = squash(quote).length >= 12 && squash(`${p.title} ${p.text}`).includes(squash(quote));
     if (!onPage) return { ...p, verdict: "mention", checked_by: r.usage.label, note: "The model's quote was not on the page, so this does not count." };
-    return { ...p, verdict, about: v.about || null, date: /^\d{4}-\d{2}-\d{2}$/.test(v.date || "") ? v.date : null, quote, checked_by: r.usage.label };
+    // Search results keep the page's markup ("###", table bars); the quote is shown and read aloud without it.
+    const shown = quote.replace(/[#*|`>]+/g, " ").replace(/\s+/g, " ").trim();
+    return { ...p, verdict, about: v.about || null, date: /^\d{4}-\d{2}-\d{2}$/.test(v.date || "") ? v.date : null, quote: shown, checked_by: r.usage.label };
   });
 }
 
@@ -117,7 +121,7 @@ export async function searchWarnings(name) {
   if (hit && Date.now() - hit.at < TTL_MS) return { ...hit.value, cached: true };
   if (!inflight.has(key)) inflight.set(key, lookUp(name).finally(() => inflight.delete(key)));
   const value = await inflight.get(key);
-  if (value.status !== "unreadable") cache.set(key, { at: Date.now(), value });
+  if (value.status === "warned") cache.set(key, { at: Date.now(), value });
   return value;
 }
 

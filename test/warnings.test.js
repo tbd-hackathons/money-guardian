@@ -11,12 +11,14 @@
 //   F6  The model calls a page a warning, but its proof is not on the page: an innocent firm is accused.
 //   F7  The listed firm is missed because Margaret said "and" and the list writes "&".
 //   F8  The key is not sent, or keyless mode sends no keyless header, so Tavily refuses every search.
-//   F9  A repeat ask spends another search.
+//   F9  A repeat ask about a warned seller spends another search.
 //   F10 No hits are spoken as if the seller were safe.
 //   F11 An outage is spoken as "no warnings": a false all-clear.
 //   F12 A failed search is cached, so the outage lasts six hours.
 //   F13 The router hears only part of a name with "and" in it ("Kent Consultants") and checks the wrong firm.
 //   F14 The warning is buried, the reply is too long to hear, or it never reaches Anna's request.
+//   F15 A search that comes back empty by chance is kept, so the next ask still misses the warning.
+//   F16 Page markup copied into a quote ("###", table bars) is shown on the card or read aloud.
 //
 // It leaves test/artifacts/warnings.json: every case, what it asked, what came back, and what Tavily received.
 import assert from "node:assert/strict";
@@ -39,6 +41,7 @@ const PAUSE_LIST = "https://www.sec.gov/enforcement-litigation/public-alerts-unr
 const FORUM = "https://scam-reviews.example/bramwell-kent";
 const IOSCO = "https://www.iosco.org/i-scan?page=55";
 const FILING = "https://www.sec.gov/Archives/edgar/data/1/0001/filing.htm";
+const ASHDOWN = "https://www.fca.org.uk/news/warnings/ashdown-pryce-capital";
 const PAGES = {
   bramwell: [
     { url: FCA, title: "Bramwell & Kent Consultants LLC | FCA", content: "This firm is not authorised by us and is targeting people in the UK. Unauthorised firm - Bramwell & Kent Consultants LLC. Address: 745 7th Avenue, New York." },
@@ -47,14 +50,18 @@ const PAGES = {
     { url: IOSCO, title: "IOSCO", content: "Apel Investments (CLONE) | Ireland - Central Bank of Ireland" }, // the name is not on the page
   ],
   halvard: [
-    { url: PAUSE_LIST, title: "SEC.gov | Public Alert: Unregistered Soliciting Entities (PAUSE)", content: "These are entities that falsely claim to be registered. | Halvard Crane Partners | Unregistered Soliciting Entities |" },
+    { url: PAUSE_LIST, title: "SEC.gov | Public Alert: Unregistered Soliciting Entities (PAUSE)", content: "### These are entities that falsely claim to be registered. | Halvard Crane Partners | Unregistered Soliciting Entities |" },
     { url: FILING, title: "Form S-4", content: "Halvard Crane Partners, a client of the registrant, signed the agreement." },
+  ],
+  ashdown: [
+    { url: ASHDOWN, title: "Ashdown & Pryce Capital | FCA", content: "Unauthorised firm - Ashdown & Pryce Capital. This firm is not authorised by us and is targeting people in the UK." },
   ],
 };
 
 // ---------- The fake outside services ----------
 const tavily = [];
 let tavilyDown = false;
+let emptyNext = 0; // this many searches find nothing, as a live search did once for a listed firm
 const fake = createServer(async (req, res) => {
   let raw = "";
   for await (const c of req) raw += c;
@@ -64,14 +71,16 @@ const fake = createServer(async (req, res) => {
     tavily.push({ headers: req.headers, body });
     if (tavilyDown) return json(500, { detail: "fake outage" });
     const q = body.query.toLowerCase();
-    const results = q.includes("bramwell") ? PAGES.bramwell : q.includes("halvard") ? PAGES.halvard : [];
+    const empty = emptyNext > 0;
+    if (empty) emptyNext--;
+    const results = empty ? [] : q.includes("bramwell") ? PAGES.bramwell : q.includes("halvard") ? PAGES.halvard : q.includes("ashdown") ? PAGES.ashdown : [];
     return json(200, { query: body.query, results: results.map((r, i) => ({ ...r, score: 0.9 - i / 10 })), images: [], answer: null, response_time: 0.1 });
   }
   if (req.url === "/nebius/chat/completions") {
     // Nemotron 3 Super, reading the pages: one honest warning, and one "action" whose quote is not on the page.
     const pages = JSON.parse(body.messages[1].content).pages;
     const verdicts = pages.map((p) => p.url === PAUSE_LIST
-      ? { id: p.id, verdict: "warning", about: "Halvard Crane Partners", date: "2019-07-25", quote: "These are entities that falsely claim to be registered." }
+      ? { id: p.id, verdict: "warning", about: "Halvard Crane Partners", date: "2019-07-25", quote: "### These are entities that falsely claim to be registered." }
       : { id: p.id, verdict: "action", about: "Halvard Crane Partners", date: null, quote: "charged with fraud by the SEC" });
     return json(200, { choices: [{ message: { role: "assistant", content: JSON.stringify({ pages: verdicts }) }, finish_reason: "stop" }], usage: { prompt_tokens: 900, completion_tokens: 80 }, model: body.model });
   }
@@ -177,11 +186,12 @@ e2e("a repeat ask is answered from the cache, without another search", ["F9"], a
   assert.equal(tavily.length, 0);
 });
 
-e2e("Nemotron reads the pages, and a verdict counts only if its quote is on the page", ["F6", "F8"], async (record) => {
+e2e("Nemotron reads the pages, and a verdict counts only if its quote is on the page", ["F6", "F8", "F16"], async (record) => {
   tavily.length = 0;
   const r = await checkWarnings(keyless, "Halvard Crane Partners");
   record("status", r.status);
   record("say", r.say);
+  record("more", r.more);
   record("warnings", pages(r.warnings));
   record("mentions", pages(r.mentions));
   record("model_calls", r.ai.map(({ job, model, label, input_tokens, output_tokens }) => ({ job, model, label, input_tokens, output_tokens })));
@@ -192,6 +202,9 @@ e2e("Nemotron reads the pages, and a verdict counts only if its quote is on the 
   assert.deepEqual(r.mentions.map((m) => m.url), [FILING]);
   assert.match(r.mentions[0].note, /quote was not on the page/);
   assert.equal(r.say, "The SEC has warned the public about Halvard Crane Partners.");
+  // The page's markup is not part of the quote that is shown and read aloud.
+  assert.equal(r.warnings[0].quote, "These are entities that falsely claim to be registered.");
+  assert.doesNotMatch(r.more, /[#|*]/);
   assert.equal(r.ai[0].model, "nvidia/nemotron-3-super-120b-a12b");
   assert.ok(tavily.length > 0 && tavily.every((c) => c.headers["x-tavily-access-mode"] === "keyless" && !c.headers.authorization));
 });
@@ -215,6 +228,22 @@ e2e("no hits are said carefully, and an outage is never a clean result", ["F10",
   const again = await checkWarnings(keyed, "Rex Halvorsen");
   record("after_outage", { status: again.status, cached: !!again.cached });
   assert.equal(again.status, "none_found");
+});
+
+e2e("a search that found nothing is not kept: the next ask searches again", ["F15"], async (record) => {
+  tavily.length = 0;
+  emptyNext = 2; // both spellings of the first ask
+  const first = await checkWarnings(keyed, "Ashdown and Pryce Capital");
+  const second = await checkWarnings(keyed, "Ashdown and Pryce Capital");
+  record("first_ask", { status: first.status, say: first.say });
+  record("second_ask", { status: second.status, cached: !!second.cached, say: second.say });
+  record("searches", tavily.length);
+  assert.equal(first.status, "none_found");
+  assert.match(first.say, /That alone doesn't make them safe/);
+  assert.equal(second.status, "warned");
+  assert.ok(!second.cached);
+  assert.deepEqual(second.warnings.map((w) => w.url), [ASHDOWN]);
+  assert.equal(tavily.length, 4); // both spellings, twice
 });
 
 e2e("scripted: a firm name with 'and' is heard whole, and the warning leads the reply", ["F13", "F14"], async (record) => {
