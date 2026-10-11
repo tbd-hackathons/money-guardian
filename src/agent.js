@@ -1,6 +1,7 @@
 // The voice assistant behind the Alexa+ simulator. It is an MCP client of our own /mcp endpoint,
-// exactly as Alexa+ would be. Claude picks the tools when it is configured (Amazon Bedrock or the
-// Claude API); otherwise a small scripted router does, so judges can run the demo with no key at all.
+// exactly as Alexa+ would be. An AI picks the tools when one is configured: NVIDIA Nemotron on Nebius
+// Token Factory, or Claude (Amazon Bedrock or the Claude API). Otherwise a small scripted router does,
+// so judges can run the demo with no key at all.
 
 import Anthropic, { betaRefusalFallbackMiddleware, BetaFallbackState } from "@anthropic-ai/sdk";
 import { AnthropicBedrockMantle } from "@anthropic-ai/bedrock-sdk";
@@ -10,6 +11,7 @@ import { household } from "./guard.js";
 import { scanPitch } from "./redflags.js";
 import { findProduct } from "./products.js";
 import { internalToken } from "./oauth.js";
+import { complete } from "./nemotron.js";
 
 const MODEL = process.env.MG_MODEL || "claude-opus-5-5";
 const FALLBACK = process.env.MG_FALLBACK_MODEL || "claude-opus-4-8"; // Bedrock only: used if MODEL declines
@@ -26,11 +28,11 @@ Rules you never break:
 - You give information, not financial advice. Say so when you discuss an investment.
 - Do not repeat full account numbers. The last four digits are fine.`;
 
-// Where Claude runs. Amazon Bedrock when MG_BEDROCK_REGION is set: AWS credentials come from the
-// standard AWS chain (an IAM role when hosted), never from this repository. The Claude API when
-// ANTHROPIC_API_KEY is set. Neither: the scripted router.
-export const provider = () => (process.env.MG_BEDROCK_REGION ? "bedrock" : process.env.ANTHROPIC_API_KEY ? "anthropic" : null);
-export const mode = () => (provider() ? "claude" : "scripted");
+// Which AI answers. Nemotron on Nebius Token Factory when NEBIUS_API_KEY is set. Claude on Amazon
+// Bedrock when MG_BEDROCK_REGION is set: AWS credentials come from the standard AWS chain (an IAM role
+// when hosted), never from this repository. The Claude API when ANTHROPIC_API_KEY is set. None: the scripted router.
+export const provider = () => (process.env.NEBIUS_API_KEY ? "nebius" : process.env.MG_BEDROCK_REGION ? "bedrock" : process.env.ANTHROPIC_API_KEY ? "anthropic" : null);
+export const mode = () => ({ nebius: "nemotron", bedrock: "claude", anthropic: "claude" })[provider()] || "scripted";
 
 async function connect(mcpUrl) {
   const client = new Client({ name: "alexa-plus-simulator", version: "0.1.0" });
@@ -102,6 +104,55 @@ async function claudeTurn(client, session, text, trace) {
   return "I need to stop here. Let's try that again in a moment.";
 }
 
+// ---------- Nemotron mode (Nebius Token Factory) ----------
+
+// The fast model gets the same rules, plus how to use the tools together, said plainly.
+const NEMOTRON_SYSTEM = `${SYSTEM}
+How to use the tools:
+- When someone describes an offer from a named person or firm, call check_seller, check_warnings (if you have it) and check_pitch in the same turn.
+- Before paying a bill, call pay_bill. If it says "blocked", offer to ask the trusted contact; call request_family_approval only after they agree.
+- Reply in plain spoken sentences only. Never show tool names, JSON or links.`;
+
+// Spoken text only: no markdown, and never a paragraph.
+function forVoice(text, trace) {
+  // Markdown marks go; an underscore inside a word ("3_5") stays.
+  const t = String(text || "").replace(/[*#`|]|^\s*>|__|(?<!\w)_|_(?!\w)/gm, "").replace(/^\s*[-•]\s+/gm, "").replace(/\s+/g, " ").trim();
+  if (!t) return trace.map((x) => x.result?.say).filter(Boolean).join(" ") || "Sorry, I didn't catch that. Could you say it again?";
+  const words = t.split(" ");
+  if (words.length <= 60) return t;
+  const sentences = t.match(/[^.!?]+[.!?]+/g) || [t];
+  return sentences.slice(0, 3).join(" ").trim();
+}
+
+async function nemotronTurn(client, session, text, trace, ai) {
+  const { tools: mcpTools } = await client.listTools();
+  const tools = mcpTools.map((t) => ({ type: "function", function: { name: t.name, description: t.description || t.title || t.name, parameters: t.inputSchema } }));
+  const history = (session.nemotron ||= []);
+  history.push({ role: "user", content: text });
+
+  for (let turn = 0; turn < MAX_TURNS; turn++) {
+    const r = await complete("fast", { messages: [{ role: "system", content: NEMOTRON_SYSTEM }, ...history], tools, maxTokens: 2048 });
+    ai.push({ ...r.usage, job: "choose the tools and reply" });
+    const calls = r.message.tool_calls || [];
+    history.push({ role: "assistant", content: r.message.content || "", ...(calls.length ? { tool_calls: calls } : {}) });
+    if (!calls.length) return forVoice(r.message.content, trace);
+
+    for (const c of calls) {
+      let args = null;
+      try { args = JSON.parse(c.function?.arguments || "{}"); } catch {}
+      let result;
+      try {
+        result = args ? await client.callTool({ name: c.function.name, arguments: args }) : { isError: true, content: [{ type: "text", text: "The arguments were not valid JSON." }] };
+      } catch (e) {
+        result = { isError: true, content: [{ type: "text", text: e.message }] };
+      }
+      if (result.structuredContent) trace.push({ tool: c.function.name, args, result: result.structuredContent });
+      history.push({ role: "tool", tool_call_id: c.id, content: result.content?.[0]?.text ?? JSON.stringify(result.structuredContent ?? {}) });
+    }
+  }
+  return "I need to stop here. Let's try that again in a moment.";
+}
+
 // ---------- Scripted mode (no key) ----------
 
 const call = async (client, trace, name, args = {}) => {
@@ -131,23 +182,34 @@ const NOT_NAME_WORDS = /^(registered|licensed|legit|real|a|an|the|my|broker|advi
 
 function sellerName(text) {
   // "a man named Victor Langston", "a firm called Apex": one word is enough after these.
-  const NAME = "([A-Z][\\w.&'-]*(?:\\s+[A-Z][\\w.&'-]*){0,3})";
+  // Firms are often two names joined by "and": "Bramwell and Kent Consultants".
+  const NAME = "([A-Z][\\w.&'-]*(?:\\s+(?:(?:and|&)\\s+)?[A-Z][\\w.&'-]*){0,3})";
   const named = text.match(new RegExp(`\\b(?:named|called)\\s+(?:is\\s+|was\\s+)?${NAME}`));
   if (named && !KNOWN.test(named[1])) return named[1].replace(/[.,]$/, "");
 
   // Otherwise, a run of two to four capitalised words that is not an opener or a name we know.
+  // "and" or "&" between two capitalised words stays in the run; if the joined run fails, each side is tried alone.
   let run = [];
   const runs = [];
-  for (const raw of text.split(/\s+/)) {
-    const word = raw.replace(/^["'(]+|["'),.!?;:]+$/g, "");
-    if (/^[A-Z][\w&'-]*$/.test(word)) run.push(word);
+  const raws = text.split(/\s+/);
+  const clean = (raw) => (raw || "").replace(/^["'(]+|["'),.!?;:]+$/g, "");
+  const capital = (w) => /^[A-Z][\w&'-]*$/.test(w);
+  raws.forEach((raw, i) => {
+    const word = clean(raw);
+    if (capital(word)) run.push(word);
+    else if (/^(and|&)$/.test(word) && run.length && capital(clean(raws[i + 1])) && !/[,.!?;:]$/.test(raws[i - 1])) run.push(word);
     else { runs.push(run); run = []; }
     if (/[,.!?;:]$/.test(raw)) { runs.push(run); run = []; }
-  }
+  });
   runs.push(run);
-  for (let r of runs) {
-    while (r.length && OPENERS.has(r[0].toLowerCase())) r = r.slice(1);
-    if (r.length >= 2 && r.length <= 4 && !r.some((w) => KNOWN.test(w))) return r.join(" ");
+  const JOIN = /^(and|&)$/;
+  const parts = (r) => r.join(" ").split(/\s+(?:and|&)\s+/).map((x) => x.split(" "));
+  for (const whole of runs) {
+    for (let r of [whole, ...(whole.some((w) => JOIN.test(w)) ? parts(whole) : [])]) {
+      while (r.length && OPENERS.has(r[0].toLowerCase())) r = r.slice(1);
+      const names = r.filter((w) => !JOIN.test(w));
+      if (names.length >= 2 && names.length <= 4 && !JOIN.test(r.at(-1)) && !names.some((w) => KNOWN.test(w))) return r.join(" ");
+    }
   }
 
   // Typed in lower case: "check victor langston", "who is rex halvorsen".
@@ -178,6 +240,21 @@ async function payFlow(client, state, trace, bill, contact) {
   state.offer = null;
   if (r.status === "paid" && state.held_bill === bill) Object.assign(state, { held_bill: null, approval_id: null });
   return r.say;
+}
+
+const capitalize = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+
+// "Bramwell and Kent Consultants is not registered to sell investments, and the SEC has warned the public about them."
+function sellerAndWarning(name, seller, warn) {
+  if (seller.status === "not_found") return `${name} is not registered to sell investments, and ${warn.who} them.`;
+  return `${seller.say} ${warn.say}`;
+}
+
+// The tools this server offers, read once: check_warnings exists only when a search service is set up.
+let toolSet;
+async function toolNames(client) {
+  toolSet ||= new Set((await client.listTools()).tools.map((t) => t.name));
+  return toolSet;
 }
 
 async function scriptedTurn(client, state, text, trace) {
@@ -251,21 +328,33 @@ async function scriptedTurn(client, state, text, trace) {
   const name = sellerName(text);
   if (flags.level !== "none" || MONEY_TALK.test(t) || (name && /\b(money|\$\d)/.test(t))) {
     const parts = [];
-    const [p, seller] = await Promise.all([
+    const [p, seller, warn] = await Promise.all([
       call(client, trace, "check_pitch", { pitch: text }),
       name ? call(client, trace, "check_seller", { name }) : null,
+      name && (await toolNames(client)).has("check_warnings") ? call(client, trace, "check_warnings", { name }) : null,
     ]);
-    if (seller) parts.push(seller.say);
-    parts.push(p.say);
-    if (p.risk === "high" || seller?.status === "not_found") {
-      Object.assign(state, { held_offer: "offer-" + (name || "unknown").toLowerCase().replace(/\W+/g, "-"), held_bill: null, held_reasons: [...(seller?.status === "not_found" ? [`${name} is not registered to sell investments`] : []), ...p.flags.map((f) => f.label)], held_amount: null, held_summary: `Investment offer${name ? ` from ${name}` : ""}: "${text.slice(0, 160)}"`, offer: "ask" });
+    // A regulator's warning is the strongest fact, so the rest gets shorter to stay a single breath.
+    const warned = warn?.status === "warned";
+    if (seller) parts.push(warned ? sellerAndWarning(name, seller, warn) : seller.say);
+    if (!warned) parts.push(p.say);
+    else if (p.risk !== "none") parts.push(p.say.match(/^[^]*?[.!?](?=\s|$)/)?.[0] || p.say);
+    if (p.risk === "high" || seller?.status === "not_found" || warned) {
+      Object.assign(state, { held_offer: "offer-" + (name || "unknown").toLowerCase().replace(/\W+/g, "-"), held_bill: null, held_reasons: [...(seller?.status === "not_found" ? [`${name} is not registered to sell investments`] : []), ...(warned ? [`${capitalize(warn.who)} ${name}`] : []), ...p.flags.map((f) => f.label)], held_amount: null, held_summary: `Investment offer${name ? ` from ${name}` : ""}: "${text.slice(0, 160)}"`, offer: "ask" });
       parts.push(`Please don't send money. Shall I tell ${contact}?`);
     }
     return parts.join(" ");
   }
 
-  // A name on its own: check registration.
-  if (name) return (await call(client, trace, "check_seller", { name })).say;
+  // A name on its own: check registration, and regulators' warnings when we can search them.
+  if (name) {
+    const [seller, warn] = await Promise.all([
+      call(client, trace, "check_seller", { name }),
+      (await toolNames(client)).has("check_warnings") ? call(client, trace, "check_warnings", { name }) : null,
+    ]);
+    if (warn?.status !== "warned") return seller.say;
+    Object.assign(state, { held_offer: "offer-" + name.toLowerCase().replace(/\W+/g, "-"), held_bill: null, held_reasons: [...(seller.status === "not_found" ? [`${name} is not registered to sell investments`] : []), `${capitalize(warn.who)} ${name}`], held_amount: null, held_summary: `Investment offer from ${name}`, offer: "ask" });
+    return `${sellerAndWarning(name, seller, warn)} Please don't send money. Shall I tell ${contact}?`;
+  }
   if (/\b(check|look up|who is|registered|licensed|legit)\b/.test(t)) return "Who should I look up? Tell me their full name.";
 
   return "I can check an investment offer, look up who is selling it, explain a product like an annuity, or review your bills before you pay. What would you like?";
@@ -280,10 +369,25 @@ export async function chat({ sessionId, text, mcpUrl }) {
   const s = sessions.get(sessionId) || { history: [], state: {} };
   sessions.set(sessionId, s);
   const trace = [];
+  const ai = []; // every model call this turn: which model, what for, how long, how many tokens
   const client = await connect(mcpUrl);
   try {
     let reply;
     let used = mode();
+    if (used === "nemotron") {
+      const before = (s.nemotron ||= []).length;
+      try {
+        reply = await nemotronTurn(client, s, text, trace, ai);
+      } catch (e) {
+        // Same rule as for Claude: an unreachable model hands the turn to the scripted router, never to an error.
+        console.error(`Nemotron unavailable: ${e.status ?? ""} ${e.message}`);
+        s.nemotron.length = before;
+        ai.push({ job: "choose the tools and reply", error: e.message });
+        used = "scripted";
+      }
+      // Keep the conversation short, cutting only where a new request starts.
+      while (s.nemotron.length > 40) { s.nemotron.shift(); while (s.nemotron.length && s.nemotron[0].role !== "user") s.nemotron.shift(); }
+    }
     if (used === "claude") {
       const before = s.history.length;
       try {
@@ -301,10 +405,12 @@ export async function chat({ sessionId, text, mcpUrl }) {
     const cards = await toolCards(client);
     for (const t of trace) if (cards[t.tool]) t.ui = cards[t.tool];
     // Who is selling comes before what they said.
-    const order = (x) => (x.tool === "check_seller" ? 0 : 1);
+    const order = (x) => ({ check_seller: 0, check_warnings: 1 })[x.tool] ?? 2;
     const more = [...trace].sort((a, b) => order(a) - order(b)).map((x) => x.result?.more).filter(Boolean).join(" ");
     if (more) s.state.more = more;
-    return { reply, trace, mode: used };
+    // Models the tools called themselves, such as Nemotron 3 Super reading regulator pages. A cached answer cost nothing.
+    for (const t of trace) if (!t.result?.cached) for (const u of t.result?.ai || []) ai.push({ ...u, tool: t.tool });
+    return { reply, trace, mode: used, ai };
   } finally {
     await client.close();
   }

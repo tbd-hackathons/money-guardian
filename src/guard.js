@@ -83,6 +83,16 @@ export function listApprovals() {
   return Object.values(loadLedger().approvals).sort((a, b) => b.created_at.localeCompare(a.created_at));
 }
 
+/** Attach the family's case brief to a request (see brief.js). It advises only: decide() ignores it. */
+export function attachBrief(approvalId, brief) {
+  const l = loadLedger();
+  const a = l.approvals[approvalId];
+  if (!a) return null;
+  a.brief = brief;
+  saveLedger(l);
+  return a;
+}
+
 export function decide(approvalId, decision) {
   const l = loadLedger();
   const a = l.approvals[approvalId];

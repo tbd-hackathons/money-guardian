@@ -1,7 +1,7 @@
 name: ci
 on:
   push:
-    branches: [main]
+    branches: [main, nebius]
   pull_request:
 jobs:
   check:
@@ -32,8 +32,9 @@ jobs:
           curl -fs -X POST "http://127.0.0.1:8790/api/chat?demo=ci000001" -H 'Content-Type: application/json' \
             -d '{"session_id":"ci","text":"What bills do I have?"}' | grep -q "looks wrong"
   publish:
-    # The hosted demo (Lightsail, us-east-1) pulls this public image. Only main, only after the checks pass.
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # The hosted demos pull this public image, only after the checks pass: main as :latest (Lightsail,
+    # us-east-1), and the nebius branch as :nebius (the Nebius × NVIDIA entry, on a Nebius Serverless endpoint).
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/nebius')
     needs: [check, container]
     runs-on: ubuntu-latest
     permissions:
@@ -47,5 +48,7 @@ jobs:
         run: |
           echo "$TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
           img=ghcr.io/tbd-hackathons/money-guardian
-          docker build --label org.opencontainers.image.source=https://github.com/${{ github.repository }} -t $img:latest -t $img:${GITHUB_SHA::7} .
+          # main keeps its tags (:latest and :<sha>); the nebius branch gets :nebius and :nebius-<sha>.
+          if [ "$GITHUB_REF_NAME" = main ]; then tags="-t $img:latest -t $img:${GITHUB_SHA::7}"; else tags="-t $img:nebius -t $img:nebius-${GITHUB_SHA::7}"; fi
+          docker build --label org.opencontainers.image.source=https://github.com/${{ github.repository }} $tags .
           docker push --all-tags $img

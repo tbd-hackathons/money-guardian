@@ -187,6 +187,7 @@
   .sheet.in-detail #back { display: inline-flex; margin-right: 4px; }
   .call { cursor: pointer; transition: background .15s; }
   .call:hover { background: var(--hover); }
+  .call.model { cursor: default; } .call.model:hover { background: none; }
   .call { border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px; font-size: 14px; line-height: 1.5; animation: rise .35s var(--ease-out); }
   .call .name { font-family: ui-monospace, Menlo, monospace; font-weight: 600; }
   .call .args { font-family: ui-monospace, Menlo, monospace; color: var(--faint); font-size: 12px; word-break: break-word; }
@@ -316,7 +317,7 @@ let sessionId = (() => { try { return sessionStorage.getItem("mg-session") || ne
 function newId() { const id = Math.random().toString(36).slice(2, 10); try { sessionStorage.setItem("mg-session", id); } catch {} return id; }
 
 const DEMO = [
-  "A man named Victor Langston called me. He says I'm guaranteed 18% a year, but only today, and I should keep it between us.",
+  "A man from Bramwell and Kent Consultants called me. He says I'm guaranteed 18% a year, but only today, and I should keep it between us.",
   "Tell me more.",
   "Yes, tell Anna.",
   "What is an annuity?",
@@ -327,7 +328,7 @@ const DEMO = [
   "Pay the water bill.",
 ];
 const IDEAS = [
-  [0, "Check an offer", "“Victor Langston says I'm guaranteed 18% a year…”"],
+  [0, "Check an offer", "“Bramwell and Kent Consultants say I'm guaranteed 18%…”"],
   [4, "Review my bills", "“What bills do I have?”"],
   [3, "Explain a product", "“What is an annuity?”"],
   [5, "Pay a bill", "“Pay the power bill.”"],
@@ -429,7 +430,9 @@ function facts(r) {
   if (!r) return "";
   const out = [];
   if (r.risk) out.push(`<span class="pill ${r.risk === "high" ? "warn" : ""}">risk: ${esc(r.risk)}</span>`);
-  if (r.status) out.push(`<span class="pill ${/not_found|blocked|denied|unreadable/.test(r.status) ? "warn" : ""}">${esc(r.status)}</span>`);
+  if (r.status) out.push(`<span class="pill ${/not_found|blocked|denied|unreadable|warned/.test(r.status) ? "warn" : ""}">${esc(r.status)}</span>`);
+  for (const w of r.warnings || []) out.push(`<div>⛔ ${esc(w.regulator)}: ${esc(w.verdict)} · <a href="${esc(w.url)}" target="_blank" rel="noopener">${esc(w.title || "page")}</a> · read by ${esc(w.checked_by)}</div>`);
+  if (r.mentions?.length) out.push(`<div class="args">${r.mentions.length} more regulator page(s) name them, but not in a warning</div>`);
   if (r.verdict) out.push(`<span class="pill ${r.verdict === "hold" ? "warn" : ""}">${esc(r.verdict)}</span>`);
   if (r.treasury?.top) out.push(`<span class="pill">T-bill ${r.treasury.top.term}: ${r.treasury.top.yield_pct.toFixed(2)}% (${esc(r.treasury.top.auction_date)})</span>`);
   for (const f of r.flags || []) out.push(`<div>⚠ ${esc(f.label)}: “${esc(f.heard.join("”, “"))}” <a href="${esc(f.source_url)}" target="_blank" rel="noopener">source</a></div>`);
@@ -442,6 +445,15 @@ function facts(r) {
   if (r.approval_id && r.asked) out.push(`<div>Request ${esc(r.approval_id)} to ${esc(r.asked)}: ${esc(r.status)}</div>`);
   if (r.product?.learn_more) out.push(`<div><a href="${esc(r.product.learn_more)}" target="_blank" rel="noopener">${esc(r.product.name)} explainer</a></div>`);
   return out.join(" ");
+}
+// Which models answered this turn, what for, and what it cost: the Token Factory side of the story.
+function showModels(calls) {
+  if (!calls?.length) return;
+  if (trace.querySelector(".empty")) trace.innerHTML = "";
+  const n = (x) => (x == null ? "?" : Number(x).toLocaleString("en-US"));
+  const d = document.createElement("div"); d.className = "call model";
+  d.innerHTML = `<div class="name">AI models</div>${calls.map((c) => `<div>${esc(c.label || c.model || "Model")}${c.tool ? ` (in ${esc(c.tool)})` : ""}: ${esc(c.job || "")}${c.error ? ` · <span class="pill warn">failed</span>` : ` · ${(c.ms / 1000).toFixed(1)} s · ${n(c.input_tokens)} in, ${n(c.output_tokens)} out tokens`}</div>`).join("")}`;
+  trace.prepend(d);
 }
 let unseen = 0;
 function showTrace(items) {
@@ -606,6 +618,7 @@ async function send(text) {
     busy = false;
     speak(j.reply);
     showTrace(j.trace || []);
+    showModels(j.ai);
     await stream(el, j.reply);
     const host = document.createElement("div"); host.className = "attach"; el.after(host);
     await showCards(j.trace || [], host);
@@ -631,7 +644,7 @@ $("reset").onclick = async () => {
   sessionId = newId(); cardCalls.clear(); bills.clear(); showList(false); log.innerHTML = ""; nextStep = 0; markSteps(); unseen = 0; $("badge").classList.remove("on");
   trace.innerHTML = '<p class="empty">Tool calls appear here.</p>'; document.body.classList.remove("chatting"); input.focus();
 };
-fetch(api("/api/mode")).then((r) => r.json()).then((j) => { $("mode").textContent = j.mode === "claude" ? "Claude" : "scripted mode"; }).catch(() => { $("mode").textContent = "offline"; });
+fetch(api("/api/mode")).then((r) => r.json()).then((j) => { $("mode").textContent = { nemotron: "NVIDIA Nemotron on Nebius", claude: "Claude" }[j.mode] || "scripted mode"; }).catch(() => { $("mode").textContent = "offline"; });
 $("anna").href = api("/family");
 fit(); markSteps();
 </script>

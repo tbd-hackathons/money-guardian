@@ -67,7 +67,7 @@ async function fetchFresh(url, throttleMs) {
   return value;
 }
 
-// MG_BROKERCHECK_URL and MG_FDIC_URL exist for the tests, which run against fakes on localhost.
+// MG_BROKERCHECK_URL, MG_FDIC_URL and MG_TREASURY_URL exist for the tests, which run against fakes on localhost.
 const BROKERCHECK = process.env.MG_BROKERCHECK_URL || "https://api.brokercheck.finra.org/search";
 
 function registerUrl(base, kind, query) {
@@ -121,6 +121,13 @@ export function nameMatches(query, row) {
   });
 }
 
+/** The same rule for a page of text: every word of the name heard appears in it. */
+export function mentionsName(query, text) {
+  const q = words(query);
+  const have = new Set(words(text));
+  return q.length > 0 && q.every((w) => have.has(w));
+}
+
 /** Look a seller up in FINRA BrokerCheck (brokers) and SEC IAPD (advisers). */
 export async function searchRegisters(name, kind = "any") {
   const kinds = kind === "any" ? ["individual", "firm"] : [kind];
@@ -167,7 +174,7 @@ export async function searchRegisters(name, kind = "any") {
 
 /** Latest Treasury bill auction yields: what a new buyer actually earns, risk-free. */
 export async function treasuryBillYields() {
-  const url = "https://www.treasurydirect.gov/TA_WS/securities/auctioned?format=json&type=Bill&pagesize=20";
+  const url = `${process.env.MG_TREASURY_URL || "https://www.treasurydirect.gov/TA_WS/securities/auctioned"}?format=json&type=Bill&pagesize=20`;
   const r = await getJson(url, { background: true }); // changes only at auctions
   const latest = new Map();
   for (const a of r.data) {

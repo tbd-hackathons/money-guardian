@@ -11,3 +11,5 @@ build/
 data/
 *.db
 *.log
+# Written by the E2E tests on every run (see test/artifact.js)
+test/artifacts/

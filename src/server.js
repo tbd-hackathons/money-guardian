@@ -9,6 +9,8 @@ import { buildServer } from "./tools.js";
 import { listApprovals, approvalStatus, decide, resetLedger, household } from "./guard.js";
 import { readToken } from "./notify.js";
 import { chat, resetSession, mode, provider, readCard } from "./agent.js";
+import { models } from "./nemotron.js";
+import { warningsEnabled } from "./warnings.js";
 import { treasuryBillYields, warmBanks } from "./sources.js";
 import { runWithDemo, cleanDemoId } from "./demo.js";
 import { secIndexDate } from "./secindex.js";
@@ -147,7 +149,7 @@ async function handle(req, res, url) {
       if (!/^ui:\/\/money-guardian\/[a-z0-9-]+\.html$/.test(uri)) return send(res, 404, { error: "unknown card" });
       return send(res, 200, await readCard({ uri, mcpUrl: `http://127.0.0.1:${PORT}/mcp` }));
     }
-    if (url.pathname === "/api/mode") return send(res, 200, { mode: mode(), ai: provider() });
+    if (url.pathname === "/api/mode") return send(res, 200, { mode: mode(), ai: provider(), ...(provider() === "nebius" ? { models: models() } : {}), warnings: warningsEnabled() ? "tavily" : null });
     if (url.pathname === "/api/approvals" && req.method === "GET") return send(res, 200, listApprovals());
     if (url.pathname.startsWith("/api/approvals/") && req.method === "POST") {
       const id = url.pathname.split("/")[3];

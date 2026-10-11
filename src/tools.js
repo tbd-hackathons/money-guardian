@@ -6,8 +6,11 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { searchRegisters, treasuryBillYields, fdicBank, ATTRIBUTION } from "./sources.js";
 import { scanPitch, claimedReturn } from "./redflags.js";
 import { PRODUCTS, findProduct } from "./products.js";
-import { reviewBill, requestApproval, approvalStatus, payBill, household } from "./guard.js";
+import { reviewBill, requestApproval, approvalStatus, payBill, household, attachBrief } from "./guard.js";
 import { notifyFamily } from "./notify.js";
+import { searchWarnings, warningsEnabled, REGULATORS } from "./warnings.js";
+import { remember, writeBrief } from "./brief.js";
+import { nemotronEnabled, models } from "./nemotron.js";
 
 const spokenDate = (ymd) => new Date(`${ymd}T12:00:00Z`).toLocaleDateString("en-US", { month: "long", day: "numeric", timeZone: "UTC" });
 
@@ -39,6 +42,13 @@ async function bestBillYield() {
 
 export function buildServer() {
   const server = new McpServer({ name: "money-guardian", version: "0.1.0" });
+  // Every tool's findings are kept briefly, so a family brief can cite them (see brief.js).
+  const register = server.registerTool.bind(server);
+  server.registerTool = (name, spec, fn) => register(name, spec, async (args, extra) => {
+    const r = await fn(args, extra);
+    remember(name, args, r.structuredContent);
+    return r;
+  });
 
   server.registerResource("money_guardian_card", CARD_URI, {
     title: "Money Guardian card",
@@ -82,6 +92,33 @@ export function buildServer() {
     const m = matches[0];
     return reply(`${m.name} is registered, CRD ${m.crd}. ${m.has_disclosures ? "Their record shows complaints or actions, so read it first." : "Their record shows no complaints."}`,
       { status: "found", more: `Registered with ${m.registers.join(" and ")}${m.current_firms?.length ? `, working for ${m.current_firms.join(", ")}` : ""}. Being registered does not make an offer a good one; check what they are selling too.`, ...facts });
+  });
+
+  // Only when a search service is configured (see warnings.js): the name goes to Tavily.
+  if (warningsEnabled()) server.registerTool("check_warnings", {
+    title: "Check regulators' public warnings",
+    description: "Search official regulator sites (the SEC, FINRA, the FTC, the CFTC, state securities regulators, the UK FCA, IOSCO) for public warnings or enforcement actions about a named person or firm. Use it with check_seller whenever someone was offered an investment by a named seller.",
+    inputSchema: { name: z.string().min(2).describe("Seller's name as the person heard it") },
+    annotations: { readOnlyHint: true, openWorldHint: true },
+    _meta: ui,
+  }, async ({ name }) => {
+    const r = await searchWarnings(name);
+    const facts = { ...r, regulators_searched: REGULATORS.length };
+    if (r.status === "unreadable") {
+      return reply("I couldn't search the regulators' warnings just now, so I can't rule anything out.",
+        { ...facts, more: `The warning search did not answer (${r.error}). That is not a clean result: please check again before deciding.` });
+    }
+    if (r.status === "none_found") {
+      return reply(`I found no regulator warning about ${name}. That alone doesn't make them safe.`,
+        { ...facts, more: `I searched ${REGULATORS.length} official regulator sites, including the SEC, FINRA, the FTC and the UK's FCA.${r.mentions.length ? ` The name appears on ${r.mentions.length === 1 ? "one page" : `${r.mentions.length} pages`}, but not in a warning.` : ""} Scammers change names often, so a clean search is not a clearance.` });
+    }
+    const said = (kind) => [...new Set(r.warnings.filter((w) => w.verdict === kind).map((w) => w.regulator))];
+    const and = (xs) => (xs.length < 2 ? xs[0] : `${xs.slice(0, -1).join(", ")} and ${xs.at(-1)}`);
+    const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+    const warned = said("warning"), acted = said("action").filter((x) => !warned.includes(x));
+    const who = warned.length ? `${and(warned)} ${warned.length > 1 ? "have" : "has"} warned the public about` : `${and(acted)} ${acted.length > 1 ? "have" : "has"} taken action against`;
+    const more = r.warnings.slice(0, 2).map((w) => `${cap(w.regulator)}${w.date ? `, ${new Date(`${w.date}T12:00:00Z`).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric", timeZone: "UTC" })}` : ""}: ${w.quote ? `"${w.quote}"` : w.title}`).join(" ");
+    return reply(`${cap(who)} ${name}.`, { ...facts, who, more: `${more} Please don't send them money.` });
   });
 
   server.registerTool("check_pitch", {
@@ -181,6 +218,12 @@ export function buildServer() {
   }, async (args) => {
     const a = requestApproval(args);
     const email = a.note ? null : await notifyFamily(a); // a new request only: asking twice sends nothing twice
+    // Nemotron 3 Ultra writes the family a case brief in the background; the request is already waiting.
+    if (!a.note && nemotronEnabled()) {
+      attachBrief(a.approval_id, { status: "writing", written_by: models().deep.label });
+      writeBrief(a).then((b) => attachBrief(a.approval_id, b))
+        .catch((e) => { console.error(`Family brief failed: ${e.message}`); attachBrief(a.approval_id, { status: "failed" }); });
+    }
     const how = email?.sent ? "emailed" : "asked";
     return reply(`I've ${how} ${a.asked}, your ${a.relation}, to look at this. Nothing goes ahead until ${a.asked} answers.`, { ...a, ...(email ? { email } : {}) });
   });

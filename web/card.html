@@ -117,6 +117,7 @@ function kindOf(d) {
   if (toolName) return toolName;
   if ("risk" in d) return "check_pitch";
   if ("matches" in d) return "check_seller";
+  if ("warnings" in d) return "check_warnings";
   if (d.bills) return "review_bills";
   if (d.product) return "explain_product";
   if (d.banks) return "check_bank";
@@ -155,6 +156,19 @@ const VIEWS = {
     const partial = d.status === "not_found_partial" ? `<p class="say">I couldn't reach ${d.answered?.[0] === "SEC IAPD" ? "FINRA BrokerCheck" : "the SEC adviser register"}, so this check isn't complete. Don't decide yet.</p>` : "";
     const none = d.status === "not_found" ? `<p class="say">Nobody by that name in FINRA BrokerCheck or the SEC adviser register. Selling investments without registration is against the law.</p>` : "";
     return head + none + partial + rows + sources(d);
+  },
+  check_warnings(d) {
+    const name = args.name || "";
+    const head = {
+      warned: verdict("bad", `Regulators warn about ${name}`),
+      none_found: verdict("info", "No regulator warning found"),
+      unreadable: verdict("hold", "Couldn't search the warnings"),
+    }[d.status] || verdict("info", name);
+    const rows = (d.warnings || []).slice(0, 3).map((w) => `<div class="row"><span>${link(w.url, w.title || w.regulator)}<br><span class="muted">${esc(w.regulator.replace(/^the /, ""))}${w.date ? ` · ${esc(day(w.date))} ${esc(w.date.slice(0, 4))}` : ""}</span></span><span class="tag bad">${w.verdict === "action" ? "Action" : "Warning"}</span></div>${w.quote ? `<p class="say"><q>${esc(w.quote)}</q></p>` : ""}`).join("");
+    const note = { none_found: "A clean search is not a clearance: scammers change names often.", unreadable: "This is not a clean result. Check again before deciding." }[d.status];
+    const readers = [...new Set((d.warnings || []).map((w) => w.checked_by).filter(Boolean))];
+    return head + rows + (note ? `<p class="say">${esc(note)}</p>` : "") +
+      `<div class="src">Searched ${esc(d.regulators_searched || "official")} regulator sites with Tavily${readers.length ? `; read by ${esc(readers.join(", "))}` : ""}.</div>`;
   },
   review_bills(d) {
     const bills = d.bills || [d];
