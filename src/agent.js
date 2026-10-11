@@ -295,11 +295,35 @@ export async function chat({ sessionId, text, mcpUrl }) {
       }
     }
     if (used === "scripted") reply = await scriptedTurn(client, s.state, text, trace);
+    // A screen device shows the card each tool names in its _meta (MCP Apps), next to the reply.
+    const cards = await toolCards(client);
+    for (const t of trace) if (cards[t.tool]) t.ui = cards[t.tool];
     // Who is selling comes before what they said.
     const order = (x) => (x.tool === "check_seller" ? 0 : 1);
     const more = [...trace].sort((a, b) => order(a) - order(b)).map((x) => x.result?.more).filter(Boolean).join(" ");
     if (more) s.state.more = more;
     return { reply, trace, mode: used };
+  } finally {
+    await client.close();
+  }
+}
+
+// tool name -> the ui:// card it names, read once from tools/list as a host would.
+let cardsByTool;
+async function toolCards(client) {
+  if (!cardsByTool) {
+    const { tools } = await client.listTools();
+    cardsByTool = Object.fromEntries(tools.filter((t) => t._meta?.ui?.resourceUri).map((t) => [t.name, t._meta.ui.resourceUri]));
+  }
+  return cardsByTool;
+}
+
+/** Read a ui:// card over MCP (resources/read), as an Alexa+ device with a screen would. */
+export async function readCard({ uri, mcpUrl }) {
+  const client = await connect(mcpUrl);
+  try {
+    const { contents } = await client.readResource({ uri });
+    return contents[0];
   } finally {
     await client.close();
   }

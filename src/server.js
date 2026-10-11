@@ -8,7 +8,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { buildServer } from "./tools.js";
 import { listApprovals, approvalStatus, decide, resetLedger, household } from "./guard.js";
 import { readToken } from "./notify.js";
-import { chat, resetSession, mode, provider } from "./agent.js";
+import { chat, resetSession, mode, provider, readCard } from "./agent.js";
 import { treasuryBillYields } from "./sources.js";
 import { runWithDemo, cleanDemoId } from "./demo.js";
 
@@ -114,6 +114,11 @@ async function handle(req, res, url) {
       if (session_id) resetSession(session_id);
       resetLedger();
       return send(res, 200, { ok: true, mode: mode(), ai: provider() });
+    }
+    if (url.pathname === "/api/ui" && req.method === "GET") {
+      const uri = url.searchParams.get("uri") || "";
+      if (!/^ui:\/\/money-guardian\/[a-z0-9-]+\.html$/.test(uri)) return send(res, 404, { error: "unknown card" });
+      return send(res, 200, await readCard({ uri, mcpUrl: `http://127.0.0.1:${PORT}/mcp` }));
     }
     if (url.pathname === "/api/mode") return send(res, 200, { mode: mode(), ai: provider() });
     if (url.pathname === "/api/approvals" && req.method === "GET") return send(res, 200, listApprovals());

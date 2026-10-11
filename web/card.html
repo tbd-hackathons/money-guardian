@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Money Guardian card</title>
+<!--
+  The MCP App view (SEP-1865, io.modelcontextprotocol/ui) that Money Guardian's tools point to.
+  An Alexa+ device with a screen shows it next to the spoken reply. It needs no network: the host
+  hands it the tool's result over postMessage, and every link opens through the host.
+-->
+<style>
+  :root {
+    --bg: #ffffff; --ink: #1d1f24; --muted: #5d6270; --line: #e2ddd2; --chip: #f1efe9;
+    --bad: #a33a2a; --bad-bg: #fbeae6; --hold: #8a5a00; --hold-bg: #fdf3dc; --ok: #1f6f5c; --ok-bg: #e4f2ed;
+    --info: #24527a; --info-bg: #e6eef6;
+  }
+  :root[data-theme="dark"] {
+    --bg: #131a21; --ink: #eef3f6; --muted: #9fb0bd; --line: #26313c; --chip: #1d2731;
+    --bad: #ff9a85; --bad-bg: #3a1d18; --hold: #f3c66b; --hold-bg: #33290f; --ok: #6fd3b3; --ok-bg: #12302a;
+    --info: #8cc4f0; --info-bg: #142636;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--ink); font: 18px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .card { padding: 14px 16px 12px; }
+  .verdict { display: flex; align-items: center; gap: 10px; font-size: 24px; font-weight: 700; padding: 10px 14px; border-radius: 12px; margin-bottom: 10px; }
+  .verdict .icon { font-size: 26px; line-height: 1; }
+  .bad { color: var(--bad); background: var(--bad-bg); }
+  .hold { color: var(--hold); background: var(--hold-bg); }
+  .ok { color: var(--ok); background: var(--ok-bg); }
+  .info { color: var(--info); background: var(--info-bg); }
+  .say { font-size: 19px; margin: 0 0 10px; }
+  .row { display: flex; justify-content: space-between; gap: 12px; padding: 8px 0; border-top: 1px solid var(--line); font-size: 18px; }
+  .row b { white-space: nowrap; }
+  .row .tag { font-size: 15px; font-weight: 700; padding: 2px 10px; border-radius: 999px; white-space: nowrap; }
+  .bars { margin: 6px 0 10px; display: grid; gap: 8px; }
+  .bar { display: grid; grid-template-columns: 8.5em 1fr 4.2em; align-items: center; gap: 10px; font-size: 16px; }
+  .bar .track { height: 18px; background: var(--chip); border-radius: 9px; overflow: hidden; }
+  .bar .fill { height: 100%; border-radius: 9px; }
+  .bar .fill.bad { background: var(--bad); } .bar .fill.ok { background: var(--ok); }
+  .bar .num { text-align: right; font-weight: 700; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 10px; }
+  .chip { background: var(--chip); border-radius: 999px; padding: 4px 12px; font-size: 16px; }
+  .chip q { color: var(--muted); }
+  .src { margin-top: 8px; font-size: 13px; color: var(--muted); }
+  .src a { color: inherit; }
+  .muted { color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="card" id="card"><p class="muted">Checking…</p></div>
+<script>
+"use strict";
+// ---------- Talking to the host: JSON-RPC 2.0 over postMessage, as the MCP Apps spec describes ----------
+let nextId = 1;
+const pending = new Map();
+const post = (msg) => window.parent.postMessage({ jsonrpc: "2.0", ...msg }, "*");
+const request = (method, params) => new Promise((resolve, reject) => { const id = nextId++; pending.set(id, { resolve, reject }); post({ id, method, params }); });
+const notify = (method, params) => post({ method, params });
+
+let toolName = "", args = {};
+window.addEventListener("message", (e) => {
+  if (e.source !== window.parent) return;
+  const m = e.data;
+  if (!m || m.jsonrpc !== "2.0") return;
+  if (m.id != null && pending.has(m.id) && !m.method) {
+    const p = pending.get(m.id); pending.delete(m.id);
+    return m.error ? p.reject(new Error(m.error.message)) : p.resolve(m.result);
+  }
+  if (m.method === "ui/notifications/tool-input") args = m.params?.arguments || {};
+  else if (m.method === "ui/notifications/tool-result") render(m.params || {});
+  else if (m.method === "ui/notifications/tool-cancelled") card.innerHTML = '<p class="muted">Stopped.</p>';
+  else if (m.method === "ui/notifications/host-context-changed") applyContext(m.params || {});
+  else if (m.method === "ui/resource-teardown") post({ id: m.id, result: {} });
+  else if (m.id != null && m.method) post({ id: m.id, error: { code: -32601, message: "Method not found" } });
+});
+
+function applyContext(ctx) {
+  if (ctx.theme) document.documentElement.dataset.theme = ctx.theme;
+  if (ctx.toolInfo?.tool?.name) toolName = ctx.toolInfo.tool.name;
+}
+
+(async () => {
+  try {
+    const r = await request("ui/initialize", {
+      appInfo: { name: "money-guardian-card", version: "0.1.0" },
+      appCapabilities: { availableDisplayModes: ["inline"] },
+      protocolVersion: "2026-01-26",
+    });
+    applyContext(r?.hostContext || {});
+  } catch { /* a host that doesn't answer still gets a card, in the light theme */ }
+  notify("ui/notifications/initialized", {});
+})();
+
+// Report height changes, so the host can size the frame to the card.
+new ResizeObserver(() => notify("ui/notifications/size-changed", { width: document.documentElement.scrollWidth, height: document.documentElement.scrollHeight })).observe(document.body);
+
+// Links open through the host: the view itself may not navigate or fetch.
+document.addEventListener("click", (e) => {
+  const a = e.target.closest("a[href]");
+  if (!a) return;
+  e.preventDefault();
+  request("ui/open-link", { url: a.href }).catch(() => {});
+});
+
+// ---------- Rendering ----------
+const card = document.getElementById("card");
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+const usd = (n) => `$${Number(n).toFixed(2)}`;
+const day = (ymd) => ymd ? new Date(`${ymd}T12:00:00Z`).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" }) : "";
+const ICON = { bad: "⛔", hold: "✋", ok: "✓", info: "ℹ" };
+const verdict = (tone, text) => `<div class="verdict ${tone}" role="status"><span class="icon" aria-hidden="true">${ICON[tone]}</span><span>${esc(text)}</span></div>`;
+const link = (href, text) => /^https:\/\//.test(href || "") ? `<a href="${esc(href)}">${esc(text)}</a>` : esc(text);
+
+// Which tool produced this result: the host says so, or the result's shape does.
+function kindOf(d) {
+  if (toolName) return toolName;
+  if ("risk" in d) return "check_pitch";
+  if ("matches" in d) return "check_seller";
+  if (d.bills) return "review_bills";
+  if (d.product) return "explain_product";
+  if (d.banks) return "check_bank";
+  if ("verdict" in d) return "review_bills";
+  if (d.approval_id && d.asked) return "request_family_approval";
+  return "pay_bill";
+}
+
+const VIEWS = {
+  check_pitch(d) {
+    const tone = { high: "bad", medium: "hold", low: "hold" }[d.risk] || "info";
+    const title = { high: "Sounds like a scam", medium: "Be careful", low: "One warning sign" }[d.risk] || "No warning signs heard";
+    let out = verdict(tone, title);
+    const t = d.treasury?.top;
+    if (d.claimed_rate_pct != null && t) {
+      const max = Math.max(d.claimed_rate_pct, t.yield_pct, 1);
+      const bar = (label, v, cls) => `<div class="bar"><span>${label}</span><span class="track"><span class="fill ${cls}" style="display:block;width:${Math.max(3, (v / max) * 100)}%"></span></span><span class="num">${v.toFixed(1)}%</span></div>`;
+      out += `<div class="bars">${bar("They promised", d.claimed_rate_pct, "bad")}${bar("Safe T-bill", t.yield_pct, "ok")}</div>`;
+    }
+    const flags = (d.flags || []).filter((f) => f.id !== "high_return");
+    if (flags.length) out += `<div class="chips">${flags.map((f) => `<span class="chip">${esc(f.short)}${f.heard?.[0] ? ` <q>${esc(f.heard[0])}</q>` : ""}</span>`).join("")}</div>`;
+    const srcs = [...new Map(flags.filter((f) => f.source_url).map((f) => [f.source_url, f])).values()].slice(0, 2);
+    out += `<div class="src">${t ? `Treasury bill rate from ${link(d.treasury.source_url, "TreasuryDirect")}, sale of ${esc(day(t.auction_date))}. ` : ""}${srcs.length ? `Warning signs from ${srcs.map((f) => link(f.source_url, new URL(f.source_url).hostname.replace(/^www\./, ""))).join(", ")}. ` : ""}Not financial advice.</div>`;
+    return out;
+  },
+  check_seller(d) {
+    const name = args.name || d.matches?.[0]?.name || "";
+    const head = {
+      not_found: verdict("bad", `${name} is not registered`),
+      found: verdict(d.matches?.[0]?.has_disclosures ? "hold" : "ok", `${d.matches?.[0]?.name || name} is registered`),
+      several: verdict("hold", `${d.matches?.length || "Several"} people called ${name}`),
+      unreadable: verdict("hold", "Couldn't check the registers"),
+      not_found_partial: verdict("bad", `${name} is not in ${d.answered?.[0] === "SEC IAPD" ? "the SEC register" : "FINRA's register"}`),
+    }[d.status] || verdict("info", name);
+    const rows = (d.matches || []).slice(0, 3).map((m) => `<div class="row"><span>${link(m.profile_url, m.name)}<br><span class="muted">CRD ${esc(m.crd)}</span></span><span class="tag ${m.has_disclosures ? "hold" : "ok"}">${m.has_disclosures ? "Complaints" : "No complaints"}</span></div>`).join("");
+    const partial = d.status === "not_found_partial" ? `<p class="say">I couldn't reach ${d.answered?.[0] === "SEC IAPD" ? "FINRA BrokerCheck" : "the SEC adviser register"}, so this check isn't complete. Don't decide yet.</p>` : "";
+    const none = d.status === "not_found" ? `<p class="say">Nobody by that name in FINRA BrokerCheck or the SEC adviser register. Selling investments without registration is against the law.</p>` : "";
+    return head + none + partial + rows + sources(d);
+  },
+  review_bills(d) {
+    const bills = d.bills || [d];
+    const holds = bills.filter((b) => b.verdict === "hold").length;
+    const head = holds ? verdict("hold", holds === 1 && bills.length === 1 ? "Hold this bill" : `${holds} of ${bills.length} bills look wrong`) : verdict("ok", bills.length === 1 ? "This bill looks normal" : `${bills.length} bills look normal`);
+    const rows = bills.map((b) => `<div class="row"><span>${esc(b.payee)}<br><span class="muted">${esc(usd(b.amount_usd))}${b.due ? ` · due ${esc(day(b.due))}` : ""}</span></span><span class="tag ${b.verdict === "hold" ? "hold" : "ok"}">${b.verdict === "hold" ? "Hold" : "OK"}</span></div>`).join("");
+    const why = bills.length === 1 && b0reasons(bills[0]);
+    return head + rows + (why || "");
+  },
+  request_family_approval(d) {
+    const tone = { approved: "ok", denied: "bad" }[d.status] || "info";
+    const title = { approved: `${d.asked} approved`, denied: `${d.asked} said no` }[d.status] || `Waiting for ${d.asked}`;
+    const reasons = (d.reasons || []).slice(0, 3).map((r) => `<span class="chip">${esc(r)}</span>`).join("");
+    return verdict(tone, title) + `<p class="say">${esc(d.summary || "")}</p>` + (reasons ? `<div class="chips">${reasons}</div>` : "") +
+      `<div class="src">Nothing is paid or sent until ${esc(d.asked)} answers${d.email?.sent ? ". Sent by email" : ""}.</div>`;
+  },
+  approval_status(d) { return VIEWS.request_family_approval(d); },
+  pay_bill(d) {
+    const v = {
+      paid: verdict("ok", d.note ? "Already paid" : "Paid"),
+      blocked: verdict("hold", "Not paid: needs family approval"),
+      waiting: verdict("info", "Not paid: waiting for an answer"),
+      denied: verdict("bad", "Not paid: the family said no"),
+      maybe_paid: verdict("hold", "Check with the payee first"),
+    }[d.status] || verdict("info", d.error || "");
+    const rows = [
+      d.amount_usd != null ? `<div class="row"><span>Amount</span><b>${esc(usd(d.amount_usd))}</b></div>` : "",
+      d.confirmation ? `<div class="row"><span>Confirmation</span><b>${esc(d.confirmation)}</b></div>` : "",
+    ].join("");
+    const why = (d.reasons || []).slice(0, 2).map((r) => `<span class="chip">${esc(r)}</span>`).join("");
+    return v + rows + (why ? `<div class="chips">${why}</div>` : "") + (d.next_step && d.status !== "paid" ? `<p class="say">${esc(d.next_step.replace(/: call request_family_approval\.?$/, "."))}</p>` : "") +
+      `<div class="src">Payments are simulated in this demo.</div>`;
+  },
+  explain_product(d) {
+    const p = d.product;
+    if (!p) return verdict("info", "Which product?") + `<p class="say">${esc(d.say)}</p>`;
+    const t = d.treasury?.top;
+    return verdict("info", p.name) + `<p class="say">${esc(p.short)}</p>` +
+      (p.ask?.[0] ? `<div class="row"><span>Ask before you buy</span></div><p class="say">${esc(p.ask[0])}</p>` : "") +
+      (t ? `<div class="row"><span>Safe T-bill today</span><b>${t.yield_pct.toFixed(2)}%</b></div>` : "") +
+      `<div class="src">${p.learn_more ? `${link(p.learn_more, "Plain-language guide")}. ` : ""}Not financial advice.</div>`;
+  },
+  check_bank(d) {
+    const b = d.banks?.[0];
+    if (d.status === "unreadable") return verdict("hold", "Couldn't reach the FDIC");
+    return (b ? verdict("ok", `${b.name} is FDIC-insured`) + `<div class="row"><span>${esc(b.city)}, ${esc(b.state)}</span></div>` : verdict("bad", `No insured bank called ${args.bank || "that"}`)) +
+      `<div class="src">Checked in ${link(d.source_url, "FDIC BankFind")}.</div>`;
+  },
+};
+// Name only the registers that answered.
+function sources(d) {
+  const all = { "FINRA BrokerCheck": link("https://brokercheck.finra.org/", "FINRA BrokerCheck"), "SEC IAPD": link("https://adviserinfo.sec.gov/", "SEC adviser register") };
+  const used = d.status === "unreadable" ? [] : (d.answered || Object.keys(all)).map((r) => all[r]).filter(Boolean);
+  return used.length ? `<div class="src">Checked live in ${used.join(" and ")}.</div>` : "";
+}
+function b0reasons(b) { return b.reasons?.length ? `<div class="chips">${b.reasons.slice(0, 3).map((r) => `<span class="chip">${esc(r)}</span>`).join("")}</div>` : ""; }
+
+function render(result) {
+  const d = result.structuredContent || {};
+  if (result.isError) { card.innerHTML = verdict("hold", "Something went wrong"); return; }
+  const view = VIEWS[kindOf(d)];
+  try { card.innerHTML = view ? view(d) : `<p class="say">${esc(d.say || "")}</p>`; }
+  catch { card.innerHTML = `<p class="say">${esc(d.say || "")}</p>`; }
+}
+</script>
+</body>
+</html>

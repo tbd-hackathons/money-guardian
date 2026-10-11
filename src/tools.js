@@ -1,5 +1,6 @@
 // The Money Guardian MCP tools. Each returns plain sentences for the voice reply plus the raw facts and sources.
 
+import { readFileSync } from "node:fs";
 import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { searchRegisters, treasuryBillYields, fdicBank, ATTRIBUTION } from "./sources.js";
@@ -11,6 +12,13 @@ import { notifyFamily } from "./notify.js";
 const spokenDate = (ymd) => new Date(`${ymd}T12:00:00Z`).toLocaleDateString("en-US", { month: "long", day: "numeric", timeZone: "UTC" });
 
 const shortPayee = (name) => String(name).replace(/\s+(Co\.|Company|Inc\.?|LLC)$/i, "");
+
+// The MCP App card (SEP-1865) a screen device shows next to the spoken reply. Hosts without MCP Apps
+// ignore the _meta and still get the full answer in content and structuredContent.
+export const CARD_URI = "ui://money-guardian/card.html";
+export const CARD_MIME = "text/html;profile=mcp-app";
+const CARD_HTML = readFileSync(new URL("../web/card.html", import.meta.url), "utf8");
+const ui = { ui: { resourceUri: CARD_URI } };
 
 const NOT_ADVICE = "This is general information to help you check, not financial advice.";
 
@@ -32,14 +40,32 @@ async function bestBillYield() {
 export function buildServer() {
   const server = new McpServer({ name: "money-guardian", version: "0.1.0" });
 
+  server.registerResource("money_guardian_card", CARD_URI, {
+    title: "Money Guardian card",
+    description: "The card a screen shows with each answer: the verdict, the key facts, and their official sources.",
+    mimeType: CARD_MIME,
+  }, async () => ({
+    // No csp: the card loads nothing from the network, so the spec's most restrictive default applies.
+    contents: [{ uri: CARD_URI, mimeType: CARD_MIME, text: CARD_HTML, _meta: { ui: { prefersBorder: true } } }],
+  }));
+
   server.registerTool("check_seller", {
     title: "Check a seller's registration",
     description: "Look up a person or firm selling investments in FINRA BrokerCheck and the SEC adviser register. Use when someone was pitched an investment by a named person or company.",
     inputSchema: { name: z.string().min(2).describe("Seller's name as the person heard it"), kind: z.enum(["individual", "firm", "any"]).default("any") },
     annotations: { readOnlyHint: true, openWorldHint: true },
+    _meta: ui,
   }, async ({ name, kind }) => {
     const { matches, similar = [], errors } = await searchRegisters(name, kind);
     const facts = { matches, similar, errors, attribution: ATTRIBUTION };
+    // One register down, the other answered with nobody: say what we know, and that the check is incomplete.
+    const failed = new Set(errors.map((e) => e.split(" (")[0]));
+    const answered = ["FINRA BrokerCheck", "SEC IAPD"].filter((r) => !failed.has(r));
+    if (errors.length && !matches.length && answered.length) {
+      const [ok, down] = answered[0] === "FINRA BrokerCheck" ? ["FINRA", "the SEC adviser register"] : ["The SEC", "FINRA BrokerCheck"];
+      return reply(`${ok} has nobody named ${name} registered to sell investments. I couldn't reach ${down}, so please don't decide yet.`,
+        { status: "not_found_partial", answered, more: `Selling investments without registration is against the law. Ask for their CRD number, the ID every registered professional has. (${errors.join("; ")})`, ...facts });
+    }
     if (errors.length && !matches.length) {
       return reply(`I couldn't reach the registers, so I can't check ${name} yet.`,
         { status: "unreadable", more: `The FINRA and SEC registers did not answer, so please don't decide until we can check. (${errors.join("; ")})`, ...facts });
@@ -63,6 +89,7 @@ export function buildServer() {
     description: "Scan the words of an investment offer for the red flags regulators warn about, and compare any promised return with today's risk-free Treasury bill rate.",
     inputSchema: { pitch: z.string().min(5).describe("What the person was told, in their own words") },
     annotations: { readOnlyHint: true, openWorldHint: true },
+    _meta: ui,
   }, async ({ pitch }) => {
     const scan = scanPitch(pitch);
     const promised = claimedReturn(pitch);
@@ -89,6 +116,7 @@ export function buildServer() {
     description: "Explain a product in plain words (Treasury bill, CD, fixed or variable annuity, bond or bond fund), its risks, the questions to ask, and today's Treasury bill rate for comparison.",
     inputSchema: { product: z.string().min(2).describe("The product as the person named it, e.g. 'an annuity'") },
     annotations: { readOnlyHint: true, openWorldHint: true },
+    _meta: ui,
   }, async ({ product }) => {
     const id = findProduct(product);
     if (!id) return reply(`I can explain Treasury bills, CDs, annuities and bonds. Which one?`, { known: Object.keys(PRODUCTS) });
@@ -109,6 +137,7 @@ export function buildServer() {
     description: "Check whether a bank named in an offer is an active FDIC-insured bank.",
     inputSchema: { bank: z.string().min(2) },
     annotations: { readOnlyHint: true, openWorldHint: true },
+    _meta: ui,
   }, async ({ bank }) => {
     try {
       const r = await fdicBank(bank);
@@ -124,6 +153,7 @@ export function buildServer() {
     description: "List the household's pending bills, or check one bill against past payments for unusual amounts, changed payment accounts, and the approval limit.",
     inputSchema: { bill_id: z.string().optional().describe("Leave empty to list pending bills") },
     annotations: { readOnlyHint: true },
+    _meta: ui,
   }, async ({ bill_id }) => {
     if (!bill_id) {
       const bills = household().pending_bills.map((b) => reviewBill(b.id));
@@ -147,6 +177,7 @@ export function buildServer() {
     title: "Ask the trusted family member",
     description: "Ask the household's trusted contact to approve a payment or an investment before any money moves. Asking twice returns the same request.",
     inputSchema: { subject_id: z.string().describe("The bill id, or a short id for the investment offer"), summary: z.string(), reasons: z.array(z.string()).default([]), amount_usd: z.number().optional() },
+    _meta: ui,
   }, async (args) => {
     const a = requestApproval(args);
     const email = a.note ? null : await notifyFamily(a); // a new request only: asking twice sends nothing twice
@@ -159,6 +190,7 @@ export function buildServer() {
     description: "See whether the trusted contact has approved or declined a request.",
     inputSchema: { approval_id: z.string() },
     annotations: { readOnlyHint: true },
+    _meta: ui,
   }, async ({ approval_id }) => {
     const a = approvalStatus(approval_id);
     const say = a.error || ({ pending: `${a.asked} hasn't answered yet.`, approved: `${a.asked} approved it.`, denied: `${a.asked} said no.` })[a.status];
@@ -170,6 +202,7 @@ export function buildServer() {
     description: "Pay a pending bill. Unusual bills need an approved family request first. Never pays the same bill twice. Payments are simulated in this demo.",
     inputSchema: { bill_id: z.string(), approval_id: z.string().optional() },
     annotations: { destructiveHint: true, idempotentHint: true },
+    _meta: ui,
   }, async ({ bill_id, approval_id }) => {
     const r = payBill(bill_id, approval_id);
     const say = r.error || ({

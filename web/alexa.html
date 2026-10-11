@@ -37,6 +37,7 @@
   .msg.you { align-self: flex-end; background: #24425a; border-bottom-right-radius: 4px; }
   .msg.alexa { align-self: flex-start; background: #1b2530; border-bottom-left-radius: 4px; }
   .msg.alexa.thinking { color: var(--screen-muted); font-style: italic; }
+  .msg.cardframe { width: 88%; max-width: 88%; padding: 0; border: 0; border-radius: 14px; height: 140px; flex-shrink: 0; align-self: flex-start; background: #131a21; overflow: hidden; }
   .ring { height: 6px; background: transparent; transition: background .2s; }
   .ring.on { background: linear-gradient(90deg, transparent, var(--ring), transparent); animation: pulse 1.2s infinite; }
   @keyframes pulse { 50% { opacity: .35; } }
@@ -169,11 +170,60 @@ async function send(text) {
     const r = await fetch(api("/api/chat"), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ session_id: sessionId, text }) });
     const j = await r.json();
     if (!r.ok) throw new Error(j.error || r.status);
-    wait.remove(); bubble(j.reply, "alexa"); speak(j.reply); showTrace(j.trace || []);
+    wait.remove(); bubble(j.reply, "alexa"); speak(j.reply); showTrace(j.trace || []); showCards(j.trace || []);
   } catch (e) {
     wait.remove(); bubble(`Sorry, something went wrong: ${e.message}`, "alexa");
   } finally { ring.classList.remove("on"); busy = false; }
 }
+// ---------- The screen: an MCP Apps host (SEP-1865), as an Alexa+ device with a screen would be ----------
+// Each tool names its card in _meta.ui.resourceUri. The card's HTML comes from the server over MCP
+// (resources/read), runs in a sandboxed frame with no network, and gets the tool's result over postMessage.
+const CARD_CSP = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; media-src data:; connect-src 'none'">`;
+const cardSource = new Map(); // ui:// uri -> Promise<html>
+const cardCalls = new Map();  // frame -> the tool call it shows
+function cardHtml(uri) {
+  if (!cardSource.has(uri)) cardSource.set(uri, fetch(`/api/ui?uri=${encodeURIComponent(uri)}`).then((r) => (r.ok ? r.json() : Promise.reject(r.status))).then((c) => c.text));
+  return cardSource.get(uri);
+}
+async function showCards(items) {
+  for (const t of items.filter((x) => x.ui)) {
+    let html;
+    try { html = await cardHtml(t.ui); } catch { continue; } // no card: the spoken reply still stands
+    const f = document.createElement("iframe");
+    f.className = "msg cardframe"; f.title = `Card for ${t.tool}`;
+    f.setAttribute("sandbox", "allow-scripts");
+    f.srcdoc = html.replace(/<head>/i, `<head>${CARD_CSP}`);
+    cardCalls.set(f, t);
+    log.append(f); log.scrollTop = log.scrollHeight;
+  }
+}
+window.addEventListener("message", (e) => {
+  const f = [...cardCalls.keys()].find((x) => x.contentWindow === e.source);
+  const m = e.data;
+  if (!f || m?.jsonrpc !== "2.0") return;
+  const t = cardCalls.get(f);
+  const out = (msg) => e.source.postMessage({ jsonrpc: "2.0", ...msg }, "*");
+  switch (m.method) {
+    case "ui/initialize":
+      return out({ id: m.id, result: {
+        protocolVersion: "2026-01-26",
+        hostInfo: { name: "alexa-plus-simulator", version: "0.1.0" },
+        hostCapabilities: { openLinks: {} },
+        hostContext: { theme: "dark", displayMode: "inline", availableDisplayModes: ["inline"], toolInfo: { tool: { name: t.tool } }, containerDimensions: { width: f.clientWidth, maxHeight: 460 } },
+      } });
+    case "ui/notifications/initialized":
+      out({ method: "ui/notifications/tool-input", params: { arguments: t.args || {} } });
+      return out({ method: "ui/notifications/tool-result", params: { content: [{ type: "text", text: t.result?.say || "" }], structuredContent: t.result } });
+    case "ui/notifications/size-changed":
+      f.style.height = `${Math.min(460, Math.ceil(m.params?.height || 140))}px`; log.scrollTop = log.scrollHeight; return;
+    case "ui/open-link":
+      if (/^https:\/\//.test(m.params?.url || "")) { window.open(m.params.url, "_blank", "noopener"); return out({ id: m.id, result: {} }); }
+      return out({ id: m.id, error: { code: -32000, message: "Invalid URL" } });
+    default:
+      if (m.id != null && m.method) out({ id: m.id, error: { code: -32601, message: "Method not found" } });
+  }
+});
+
 $("form").onsubmit = (e) => { e.preventDefault(); send($("text").value); };
 
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -186,7 +236,7 @@ if (!SR) $("mic").hidden = true; else {
 
 $("reset").onclick = async () => {
   await fetch(api("/api/reset"), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ session_id: sessionId }) });
-  sessionId = newId(); log.innerHTML = ""; trace.innerHTML = '<p class="empty">Tool calls appear here.</p>'; greet();
+  sessionId = newId(); cardCalls.clear(); log.innerHTML = ""; trace.innerHTML = '<p class="empty">Tool calls appear here.</p>'; greet();
 };
 function greet() { bubble("Hi Margaret. I can check an investment offer, look up who is selling it, or review your bills before you pay.", "alexa"); }
 fetch(api("/api/mode")).then((r) => r.json()).then((j) => { $("mode").textContent = j.mode === "claude" ? "Running on Claude." : "Running in scripted mode (no AI key needed)."; }).catch(() => {});
