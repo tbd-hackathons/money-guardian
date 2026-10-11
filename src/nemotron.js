@@ -8,6 +8,10 @@
 // OpenAI-compatible server (vLLM, NIM, a Nebius dedicated endpoint) can stand in by changing the base URL.
 // On when NEBIUS_API_KEY is set. MG_NEBIUS_BASE_URL also exists for the tests, which run against a fake API on localhost.
 
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
 const TIERS = {
   fast: { env: "MG_NEMOTRON_FAST", model: "nvidia/Nemotron-3_5-Lightning", label: "Nemotron 3.5 Lightning" },
   judge: { env: "MG_NEMOTRON_JUDGE", model: "nvidia/nemotron-3-super-120b-a12b", label: "Nemotron 3 Super" },
@@ -21,16 +25,45 @@ export const models = () => Object.fromEntries(Object.keys(TIERS).map((t) => [t,
 
 const base = () => (process.env.MG_NEBIUS_BASE_URL || "https://api.tokenfactory.nebius.com/v1").replace(/\/+$/, "");
 
-// A daily token budget keeps a public demo inside its free credits: MG_NEMOTRON_DAILY_TOKENS (unset: no limit).
-// Past it, no call is made, and every caller falls back as it does when Token Factory is down: scripted replies,
-// the page-address rule for warnings, no case brief. The count is in memory per UTC date; a restart starts it again.
-const spent = { day: "", tokens: 0 };
-export function budget() {
-  const cap = Number(process.env.MG_NEMOTRON_DAILY_TOKENS || 0);
-  if (!cap) return null;
+// Spending brakes for a public demo. Token Factory charges the card once the balance goes below zero, so the free
+// credits last only if the app stops itself:
+//   MG_NEMOTRON_DAILY_TOKENS  tokens per UTC day, so one busy day can't use up everything;
+//   MG_NEMOTRON_TOTAL_USD     dollars in all, priced with PRICE below.
+// Past either, no call is made, and every caller falls back as it does when Token Factory is down: scripted replies,
+// the page-address rule for warnings, no case brief. What was spent is saved next to the ledger, so a restart keeps it.
+// US$ per million tokens, input and output, from third-party listings of Token Factory (11 Oct 2026); check them in
+// the console. Lightning's price is not confirmed, so it is priced like Super, and an unknown model like Ultra: too
+// high is safe, too low is not.
+const PRICE = { "nvidia/Nemotron-3_5-Lightning": [0.3, 0.9], "nvidia/nemotron-3-super-120b-a12b": [0.3, 0.9], "nvidia/Nemotron-3-Ultra-550b-a55b": [1, 3] };
+const priceOf = (model) => PRICE[model] || [1, 3];
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
+const spendFile = () => join(dirname(process.env.MG_LEDGER || join(ROOT, "data", "ledger.json")), "nemotron-spend.json");
+let spent;
+function loadSpent() {
+  if (!spent) { try { spent = JSON.parse(readFileSync(spendFile(), "utf8")); } catch { spent = {}; } }
   const day = new Date().toISOString().slice(0, 10);
   if (spent.day !== day) Object.assign(spent, { day, tokens: 0 });
-  return { tokens_per_day: cap, used_today: spent.tokens };
+  spent.usd ||= 0;
+  return spent;
+}
+export function budget() {
+  const perDay = Number(process.env.MG_NEMOTRON_DAILY_TOKENS || 0), total = Number(process.env.MG_NEMOTRON_TOTAL_USD || 0);
+  if (!perDay && !total) return null;
+  const s = loadSpent();
+  return { ...(perDay ? { tokens_per_day: perDay, used_today: s.tokens } : {}), ...(total ? { usd_cap: total, usd_spent: Math.round(s.usd * 1e6) / 1e6 } : {}) };
+}
+function overBudget() {
+  const b = budget();
+  if (b?.tokens_per_day && b.used_today >= b.tokens_per_day) return "Today's Nemotron token budget is used up; it starts again at 00:00 UTC";
+  if (b?.usd_cap && b.usd_spent >= b.usd_cap) return "This demo's Nemotron spending budget is used up";
+  return null;
+}
+function addSpend(model, input, output) {
+  if (!budget()) return;
+  const s = loadSpent(), [pin, pout] = priceOf(model);
+  s.tokens += input + output;
+  s.usd += (input * pin + output * pout) / 1e6;
+  try { mkdirSync(dirname(spendFile()), { recursive: true }); writeFileSync(spendFile(), JSON.stringify(s)); } catch (e) { console.error(`Could not save Nemotron spend: ${e.message}`); }
 }
 
 // Reasoning models may think out loud. The listener only ever hears the answer.
@@ -41,10 +74,8 @@ const stripThinking = (s) => (typeof s === "string" ? s.replace(/<think>[\s\S]*?
  * Throws on any HTTP error or timeout; callers decide what an honest fallback is.
  */
 export async function complete(tier, { messages, tools, json = false, maxTokens = 1024, temperature, timeoutMs = 20_000 }) {
-  const left = budget();
-  if (left && left.used_today >= left.tokens_per_day) {
-    throw Object.assign(new Error("Today's Nemotron token budget is used up; it starts again at 00:00 UTC"), { budget: true });
-  }
+  const over = overBudget();
+  if (over) throw Object.assign(new Error(over), { budget: true });
   const model = modelOf(tier);
   const body = { model, messages, max_tokens: maxTokens };
   if (tools?.length) Object.assign(body, { tools, tool_choice: "auto" });
@@ -62,7 +93,7 @@ export async function complete(tier, { messages, tools, json = false, maxTokens 
     throw Object.assign(new Error(`Token Factory answered HTTP ${res.status}: ${detail}`), { status: res.status });
   }
   const data = await res.json();
-  if (budget()) spent.tokens += (data.usage?.prompt_tokens ?? 0) + (data.usage?.completion_tokens ?? 0);
+  addSpend(model, data.usage?.prompt_tokens ?? 0, data.usage?.completion_tokens ?? 0);
   const choice = data.choices?.[0] || {};
   const message = { ...(choice.message || {}), content: stripThinking(choice.message?.content) };
   return {

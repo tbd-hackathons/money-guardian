@@ -20,6 +20,8 @@
 //   N16 Over the budget, the warnings check stops counting a regulator's warning.
 //   N17 Over the budget, Anna's request waits for a brief that never comes.
 //   N18 The budget never resets. Not tested here: it needs a clock. The count is kept per UTC date.
+//   N19 Token Factory charges the card once the balance goes below zero: spending past the free credits costs real money.
+//   N20 A restart forgets what was spent, so the caps can be passed by restarting.
 //
 // It leaves test/artifacts/nemotron.json: every case, what it asked, what came back, and what the models received.
 import assert from "node:assert/strict";
@@ -91,7 +93,7 @@ async function start(extra) {
   const p = spawn(process.execPath, ["src/server.js"], { env: { ...env, ...extra }, stdio: ["ignore", "pipe", "pipe"] });
   procs.push(p);
   await new Promise((ok) => p.stdout.once("data", ok));
-  return `http://127.0.0.1:${port}`;
+  return Object.assign(`http://127.0.0.1:${port}`, { stop: () => new Promise((ok) => { p.once("exit", ok); p.kill(); }) });
 }
 let base;
 before(async () => {
@@ -236,4 +238,25 @@ e2e("over the day's token budget, Nemotron stops and every answer still comes", 
   assert.match(brief.note, /budget/);
   assert.equal(seen.length, 2); // nothing reached Token Factory after the budget was spent
   assert.deepEqual(m.budget, { tokens_per_day: 2000, used_today: 2480 });
+});
+
+e2e("a total spending cap stops Nemotron before the credits run out, even after a restart", ["N19", "N20"], async (record) => {
+  const env = { MG_NEMOTRON_TOTAL_USD: "0.0005", MG_LEDGER: join(mkdtempSync(join(tmpdir(), "mg-")), "l.json") };
+  let at = await start(env);
+  seen.length = 0;
+  const first = await say(PITCH, "u1", at); // two Lightning calls: US$0.000792 at the prices assumed, past the cap
+  const second = await say(PITCH, "u1", at);
+  await at.stop();
+  at = await start(env); // the same data folder, as a redeploy with a volume
+  const third = await say(PITCH, "u2", at);
+  const m = await (await fetch(`${at}/api/mode`)).json();
+  record("turns", [first, second, third].map((r) => ({ mode: r.mode, errors: r.ai.filter((a) => a.error).map((a) => a.error) })));
+  record("budget_after_restart", m.budget);
+  record("model_calls_made", seen.length);
+  assert.equal(first.mode, "nemotron");
+  assert.equal(second.mode, "scripted");
+  assert.match(second.ai.find((a) => a.error).error, /budget/);
+  assert.equal(third.mode, "scripted"); // the restart did not reset what was spent
+  assert.equal(seen.length, 2);
+  assert.deepEqual(m.budget, { usd_cap: 0.0005, usd_spent: 0.000792 });
 });

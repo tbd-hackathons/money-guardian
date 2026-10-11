@@ -51,7 +51,7 @@ const suggestion = (b) => (b?.status === "ready" && SUGGEST[b.suggestion]
 function brief(b) {
   if (!b) return "";
   if (b.status === "writing") return `<div class="brief writing">${esc(b.written_by || "Nemotron")} is writing a short brief…</div>`;
-  if (b.status === "skipped") return `<div class="brief none">No case brief this time: today's Nemotron budget is used up.</div>`;
+  if (b.status === "skipped") return `<div class="brief none">No case brief this time: the Nemotron budget is used up.</div>`;
   if (b.status !== "ready") return `<div class="brief none">Nemotron couldn't write a case brief this time.</div>`;
   const link = (u) => (/^https:\/\//.test(u || "") ? ` <a href="${esc(u)}" target="_blank" rel="noopener">source</a>` : "");
   return `<details class="brief" open><summary>Case brief</summary>
