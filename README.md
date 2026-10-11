@@ -84,7 +84,8 @@ Endpoint: `POST /mcp` (Streamable HTTP, stateless, spec 2025-11-25).
 
 ## Data and attribution
 
-- FINRA BrokerCheck and SEC Investment Adviser Public Disclosure. Used to check a single named seller, at a low rate, with a 10-minute cache. Set `MG_USER_AGENT` with a contact address.
+- FINRA BrokerCheck, read live to check a single named seller, at a low rate, with a 10-minute cache. Set `MG_USER_AGENT` with a contact address.
+- SEC Investment Adviser Public Disclosure, from the SEC's daily [compilation files](https://adviserinfo.sec.gov/compilation): every investment adviser representative and adviser firm (441,534 people and 43,727 firms on 10 Oct 2026). `scripts/build-sec-index.mjs` reduces the three files (about 190 MB compressed) to `registers/sec-iapd.tsv.gz` (12 MB): name, other names, CRD, current firms, disclosures, status. A lookup takes under a millisecond and never touches the SEC's site. To refresh, download the latest files listed in the [manifest](https://reports.adviserinfo.sec.gov/reports/CompilationReports/CompilationReports.manifest.json) and run the script on them.
 - TreasuryDirect auction results (`TA_WS/securities/auctioned`). The rate shown is the investment rate at the latest auction for each term.
 - FDIC BankFind Suite API.
 - Red-flag wording comes from FINRA's "Red Flags of Fraud" and the SEC investor alerts linked in `src/redflags.js`.

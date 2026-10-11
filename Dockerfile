@@ -7,6 +7,7 @@ RUN npm ci --omit=dev && npm cache clean --force
 COPY src ./src
 COPY web ./web
 COPY fixtures ./fixtures
+COPY registers ./registers
 RUN mkdir -p data && chown node:node data
 USER node
 EXPOSE 8790

@@ -1,8 +1,9 @@
 // Public US sources, read live. Every result carries its source URL and retrieval time.
-// BrokerCheck and IAPD have no documented API; FINRA permits investor-protection lookups that
+// BrokerCheck has no documented API; FINRA permits investor-protection lookups that
 // do not burden the site and that credit BrokerCheck (see README "Data sources").
 
 import net from "node:net";
+import { searchSecIndex } from "./secindex.js";
 
 // Some networks advertise IPv6 but drop it (treasurydirect.gov does this here). Node's default 250 ms
 // before trying IPv4 is too short and fetch then times out. Give each address family 500 ms.
@@ -49,7 +50,6 @@ async function getJson(url, { throttleMs = 0 } = {}) {
 }
 
 const BROKERCHECK = "https://api.brokercheck.finra.org/search";
-const IAPD = "https://api.adviserinfo.sec.gov/search";
 
 function registerUrl(base, kind, query) {
   const q = new URLSearchParams({ query, hl: "true", nrows: "12", start: "0", r: "25", sort: "score+desc", wt: "json" });
@@ -107,18 +107,28 @@ export async function searchRegisters(name, kind = "any") {
   const kinds = kind === "any" ? ["individual", "firm"] : [kind];
   const results = [];
   const errors = [];
-  const queries = kinds.flatMap((k) => [["FINRA BrokerCheck", BROKERCHECK], ["SEC IAPD", IAPD]].map(([label, base]) => ({ k, label, base })));
-  await Promise.all(queries.map(async ({ k, label, base }) => {
+  // FINRA BrokerCheck is read live. The SEC adviser register comes from the SEC's own daily
+  // compilation files (registers/sec-iapd.tsv.gz): no network call, and nothing to block.
+  await Promise.all(kinds.map(async (k) => {
     try {
-      const r = await getJson(registerUrl(base, k, name), { throttleMs: 1200 });
+      const r = await getJson(registerUrl(BROKERCHECK, k, name), { throttleMs: 1200 });
       for (const h of r.data?.hits?.hits || []) {
         const row = k === "individual" ? personRow(h._source) : firmRow(h._source);
-        results.push({ ...row, register: label, retrieved_at: r.retrieved_at });
+        results.push({ ...row, register: "FINRA BrokerCheck", retrieved_at: r.retrieved_at });
       }
     } catch (e) {
-      errors.push(`${label} (${k}): ${e.message}`);
+      errors.push(`FINRA BrokerCheck (${k}): ${e.message}`);
     }
   }));
+  for (const k of kinds) {
+    try {
+      // MG_OFFLINE=1 turns off every register lookup, local or not, so tests can rehearse "no register answered".
+      if (process.env.MG_OFFLINE === "1") throw new Error("offline mode (MG_OFFLINE=1)");
+      for (const row of searchSecIndex(name, k)) results.push({ ...row, register: "SEC IAPD" });
+    } catch (e) {
+      errors.push(`SEC IAPD (${k}): ${e.message}`);
+    }
+  }
   // The two registers share CRD numbers; keep one row per person or firm.
   const byCrd = new Map();
   for (const row of results) {
