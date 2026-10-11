@@ -31,3 +31,21 @@ jobs:
           curl -fs http://127.0.0.1:8790/ | grep -q "<title>Money Guardian</title>"
           curl -fs -X POST "http://127.0.0.1:8790/api/chat?demo=ci000001" -H 'Content-Type: application/json' \
             -d '{"session_id":"ci","text":"What bills do I have?"}' | grep -q "looks wrong"
+  publish:
+    # The hosted demo (Lightsail, us-east-1) pulls this public image. Only main, only after the checks pass.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [check, container]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and push ghcr.io/tbd-hackathons/money-guardian
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "$TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          img=ghcr.io/tbd-hackathons/money-guardian
+          docker build --label org.opencontainers.image.source=https://github.com/${{ github.repository }} -t $img:latest -t $img:${GITHUB_SHA::7} .
+          docker push --all-tags $img
