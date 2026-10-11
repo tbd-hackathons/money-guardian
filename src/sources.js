@@ -21,10 +21,28 @@ async function fetchJson(url) {
   return res.json();
 }
 
-async function getJson(url, { throttleMs = 0 } = {}) {
+const inflight = new Map(); // url -> the request already on its way, shared by everyone who asks
+
+// background: answer from a cached copy younger than a day at once, and refresh it behind the
+// scenes once it is older than the TTL. For data that changes slowly (rates, the list of banks).
+async function getJson(url, { throttleMs = 0, background = false } = {}) {
   if (process.env.MG_OFFLINE === "1") throw new Error("offline mode (MG_OFFLINE=1)");
   const hit = cache.get(url);
   if (hit && Date.now() - hit.at < TTL_MS) return hit.value;
+  if (background && hit && Date.now() - hit.at < STALE_OK_MS) {
+    fetchShared(url, throttleMs).catch(() => {}); // the next caller gets the fresh copy
+    return hit.value;
+  }
+  return fetchShared(url, throttleMs);
+}
+
+function fetchShared(url, throttleMs) {
+  if (!inflight.has(url)) inflight.set(url, fetchFresh(url, throttleMs).finally(() => inflight.delete(url)));
+  return inflight.get(url);
+}
+
+async function fetchFresh(url, throttleMs) {
+  const hit = cache.get(url);
   if (throttleMs) {
     const host = new URL(url).host;
     const wait = (lastCall.get(host) || 0) + throttleMs - Date.now();
@@ -49,7 +67,8 @@ async function getJson(url, { throttleMs = 0 } = {}) {
   return value;
 }
 
-const BROKERCHECK = "https://api.brokercheck.finra.org/search";
+// MG_BROKERCHECK_URL and MG_FDIC_URL exist for the tests, which run against fakes on localhost.
+const BROKERCHECK = process.env.MG_BROKERCHECK_URL || "https://api.brokercheck.finra.org/search";
 
 function registerUrl(base, kind, query) {
   const q = new URLSearchParams({ query, hl: "true", nrows: "12", start: "0", r: "25", sort: "score+desc", wt: "json" });
@@ -109,14 +128,19 @@ export async function searchRegisters(name, kind = "any") {
   const errors = [];
   // FINRA BrokerCheck is read live. The SEC adviser register comes from the SEC's own daily
   // compilation files (registers/sec-iapd.tsv.gz): no network call, and nothing to block.
-  await Promise.all(kinds.map(async (k) => {
+  // One lookup sends its two FINRA queries together; the polite spacing is between lookups.
+  const budget = Number(process.env.MG_LIVE_BUDGET_MS || 0);
+  await Promise.all(kinds.map(async (k, i) => {
+    const ask = getJson(registerUrl(BROKERCHECK, k, name), { throttleMs: i === 0 ? 1200 : 0 });
     try {
-      const r = await getJson(registerUrl(BROKERCHECK, k, name), { throttleMs: 1200 });
+      // With a budget, a slow FINRA answer is not waited for; it still arrives and is cached for the next ask.
+      const r = budget ? await Promise.race([ask, new Promise((_, no) => setTimeout(() => no(new Error(`no answer within ${budget} ms`)), budget))]) : await ask;
       for (const h of r.data?.hits?.hits || []) {
         const row = k === "individual" ? personRow(h._source) : firmRow(h._source);
         results.push({ ...row, register: "FINRA BrokerCheck", retrieved_at: r.retrieved_at });
       }
     } catch (e) {
+      ask.catch(() => {});
       errors.push(`FINRA BrokerCheck (${k}): ${e.message}`);
     }
   }));
@@ -144,7 +168,7 @@ export async function searchRegisters(name, kind = "any") {
 /** Latest Treasury bill auction yields: what a new buyer actually earns, risk-free. */
 export async function treasuryBillYields() {
   const url = "https://www.treasurydirect.gov/TA_WS/securities/auctioned?format=json&type=Bill&pagesize=20";
-  const r = await getJson(url);
+  const r = await getJson(url, { background: true }); // changes only at auctions
   const latest = new Map();
   for (const a of r.data) {
     const term = a.securityTerm;
@@ -155,17 +179,25 @@ export async function treasuryBillYields() {
   return { bills: [...latest.values()], source_url: "https://www.treasurydirect.gov/auctions/auction-query/", retrieved_at: r.retrieved_at, ...(r.stale ? { stale: true } : {}) };
 }
 
-/** FDIC-insured status of a bank by name. */
+// Every active FDIC-insured bank (about 4,200) in one request, refreshed daily behind the scenes.
+const FDIC_ALL = `${process.env.MG_FDIC_URL || "https://api.fdic.gov/banks/institutions"}?${new URLSearchParams({ filters: "ACTIVE:1", fields: "NAME,CERT,CITY,STALP", limit: "10000", sort_by: "CERT", sort_order: "ASC" })}`;
+
+/** Load the list of banks now, so the first question doesn't wait for it. */
+export const warmBanks = () => getJson(FDIC_ALL, { background: true });
+
+/** FDIC-insured status of a bank by name: every word heard must be in the bank's name. */
 export async function fdicBank(name) {
-  const q = new URLSearchParams({ filters: `NAME:"${name.replace(/"/g, "")}" AND ACTIVE:1`, fields: "NAME,CERT,CITY,STALP,ACTIVE", limit: "5" });
-  const r = await getJson(`https://api.fdic.gov/banks/institutions?${q}`);
-  return {
-    banks: (r.data?.data || []).map((d) => ({ name: d.data.NAME, fdic_cert: d.data.CERT, city: d.data.CITY, state: d.data.STALP })),
-    source_url: "https://banks.data.fdic.gov/bankfind-suite/bankfind",
-    retrieved_at: r.retrieved_at,
-  };
+  const r = await getJson(FDIC_ALL, { background: true });
+  const q = words(name).filter((w) => w !== "bank");
+  const exact = (b) => (b.name.toLowerCase() === String(name).trim().toLowerCase() ? 0 : 1);
+  const banks = (r.data?.data || [])
+    .map((d) => ({ name: d.data.NAME, fdic_cert: d.data.CERT, city: d.data.CITY, state: d.data.STALP }))
+    .filter((b) => q.length && q.every((w) => words(b.name).includes(w)))
+    .sort((a, b) => exact(a) - exact(b) || a.name.length - b.name.length)
+    .slice(0, 5);
+  return { banks, source_url: "https://banks.data.fdic.gov/bankfind-suite/bankfind", retrieved_at: r.retrieved_at, ...(r.stale ? { stale: true } : {}) };
 }
 
 export const ATTRIBUTION =
   "Registration data from FINRA BrokerCheck (brokercheck.finra.org) and the SEC Investment Adviser Public Disclosure site (adviserinfo.sec.gov), " +
-  "read live at the time shown. Check the full record on BrokerCheck before deciding; report errors to FINRA.";
+  "as of the time shown. Check the full record on BrokerCheck before deciding; report errors to FINRA.";

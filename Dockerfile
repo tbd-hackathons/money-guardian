@@ -1,7 +1,9 @@
 # Runs anywhere Docker runs (AWS App Runner, ECS, Fly, a VPS). No build step.
 FROM node:22-alpine
 WORKDIR /app
-ENV NODE_ENV=production HOST=0.0.0.0 PORT=8790
+# MG_LIVE_BUDGET_MS: Alexa+ wants each tool answered within 500 ms. From us-east-1 FINRA answers in
+# about 150 ms; a slower answer is not waited for (the reply says so) and is cached for the next ask.
+ENV NODE_ENV=production HOST=0.0.0.0 PORT=8790 MG_LIVE_BUDGET_MS=400
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 COPY src ./src

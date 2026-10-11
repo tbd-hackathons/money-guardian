@@ -9,7 +9,7 @@ import { buildServer } from "./tools.js";
 import { listApprovals, approvalStatus, decide, resetLedger, household } from "./guard.js";
 import { readToken } from "./notify.js";
 import { chat, resetSession, mode, provider, readCard } from "./agent.js";
-import { treasuryBillYields } from "./sources.js";
+import { treasuryBillYields, warmBanks } from "./sources.js";
 import { runWithDemo, cleanDemoId } from "./demo.js";
 import { secIndexDate } from "./secindex.js";
 
@@ -161,7 +161,10 @@ sweepDemos();
 setInterval(sweepDemos, 6 * 3600e3).unref();
 
 app.listen(PORT, HOST, () => {
-  treasuryBillYields().catch(() => {}); // warm the cache; a failure here is retried on first use
+  // Warm the slow-changing sources now, and keep them warm: a caller never waits for them.
+  const warm = () => { treasuryBillYields().catch(() => {}); warmBanks().catch(() => {}); };
+  warm();
+  setInterval(warm, 9 * 60 * 1000).unref();
   console.log(`Money Guardian on http://${HOST}:${PORT}  (MCP endpoint /mcp)`);
   // Load the SEC register now (about a second), so the first caller doesn't wait for it.
   try { console.log(`SEC adviser register as of ${secIndexDate()}`); } catch (e) { console.error(`SEC adviser register unavailable: ${e.message}`); }
