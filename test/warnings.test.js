@@ -19,6 +19,10 @@
 //   F14 The warning is buried, the reply is too long to hear, or it never reaches Anna's request.
 //   F15 A search that comes back empty by chance is kept, so the next ask still misses the warning.
 //   F16 Page markup copied into a quote ("###", table bars) is shown on the card or read aloud.
+//   F17 A model tells Anna that regulators warned about a seller, or that it is (not) registered, when no check found that.
+//   F18 A warning the checks did find never reaches Anna, because the model left it out of its reasons.
+//   F19 A finding about one firm lands on the request about another firm.
+//   F20 Checking the reasons drops what the model heard in the pitch ("Pressure to act right now").
 //
 // It leaves test/artifacts/warnings.json: every case, what it asked, what came back, and what Tavily received.
 import assert from "node:assert/strict";
@@ -244,6 +248,29 @@ e2e("a search that found nothing is not kept: the next ask searches again", ["F1
   assert.ok(!second.cached);
   assert.deepEqual(second.warnings.map((w) => w.url), [ASHDOWN]);
   assert.equal(tavily.length, 4); // both spellings, twice
+});
+
+e2e("what reaches Anna is what the checks found, not what a model claims", ["F17", "F18", "F19", "F20"], async (record) => {
+  // Claude or Alexa checks the seller over /mcp, then asks Anna with reasons of its own.
+  await mcp(keyed, async (c) => {
+    await c.callTool({ name: "check_seller", arguments: { name: "Bramwell and Kent Consultants" } });
+    await c.callTool({ name: "check_warnings", arguments: { name: "Bramwell and Kent Consultants" } });
+  });
+  const ask = (args) => mcp(keyed, async (c) => (await c.callTool({ name: "request_family_approval", arguments: args })).structuredContent);
+  const bk = await ask({ subject_id: "offer-bk-mcp", summary: "Investment offer from Bramwell and Kent Consultants", reasons: ["The SEC charged them with fraud", "A guaranteed return"] });
+  // Victor Langston was searched earlier and nothing was found; nobody checked the registers for him.
+  const vl = await ask({ subject_id: "offer-vl-mcp", summary: "Investment offer from Victor Langston",
+    reasons: ["Regulators have warned the public about Victor Langston", "Victor Langston is registered with FINRA", "Pressure to act right now"] });
+  const list = await (await fetch(`${keyed}/api/approvals`)).json();
+  record("bramwell_request", { reasons: bk.reasons, unbacked_reasons: bk.unbacked_reasons });
+  record("langston_request", { reasons: vl.reasons, unbacked_reasons: vl.unbacked_reasons });
+  assert.deepEqual(bk.reasons, ["Bramwell and Kent Consultants is not registered to sell investments", "The UK's FCA has warned the public about Bramwell and Kent Consultants", "A guaranteed return"]);
+  assert.deepEqual(bk.unbacked_reasons, ["The SEC charged them with fraud"]);
+  assert.ok(![...bk.reasons, ...vl.reasons].some((x) => /Ashdown/.test(x))); // warned about earlier, in this same household
+  assert.deepEqual(vl.reasons, ["Pressure to act right now"]);
+  assert.deepEqual(vl.unbacked_reasons, ["Regulators have warned the public about Victor Langston", "Victor Langston is registered with FINRA"]);
+  // Anna's page shows the checked reasons.
+  assert.deepEqual(list.find((a) => a.subject_id === "offer-bk-mcp").reasons, bk.reasons);
 });
 
 e2e("scripted: a firm name with 'and' is heard whole, and the warning leads the reply", ["F13", "F14"], async (record) => {

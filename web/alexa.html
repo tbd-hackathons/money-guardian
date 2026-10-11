@@ -441,6 +441,7 @@ function facts(r) {
   for (const m of (r.similar || []).slice(0, 2)) out.push(`<div class="args">≠ ${esc(m.name)} (CRD ${esc(m.crd)}): register's loose match, a different person</div>`);
   for (const b of r.bills || []) out.push(`<div>${esc(b.payee)} $${b.amount_usd.toFixed(2)} → <b>${esc(b.verdict)}</b></div>`);
   for (const x of r.reasons || []) out.push(`<div>· ${esc(x)}</div>`);
+  for (const x of r.unbacked_reasons || []) out.push(`<div>✕ Not passed on: “${esc(x)}” (only what a check found goes to Anna)</div>`);
   if (r.confirmation) out.push(`<div>Confirmation ${esc(r.confirmation)}</div>`);
   if (r.approval_id && r.asked) out.push(`<div>Request ${esc(r.approval_id)} to ${esc(r.asked)}: ${esc(r.status)}</div>`);
   if (r.product?.learn_more) out.push(`<div><a href="${esc(r.product.learn_more)}" target="_blank" rel="noopener">${esc(r.product.name)} explainer</a></div>`);
@@ -452,7 +453,7 @@ function showModels(calls) {
   if (trace.querySelector(".empty")) trace.innerHTML = "";
   const n = (x) => (x == null ? "?" : Number(x).toLocaleString("en-US"));
   const d = document.createElement("div"); d.className = "call model";
-  d.innerHTML = `<div class="name">AI models</div>${calls.map((c) => `<div>${esc(c.label || c.model || "Model")}${c.tool ? ` (in ${esc(c.tool)})` : ""}: ${esc(c.job || "")}${c.error ? ` · <span class="pill warn">failed</span>` : ` · ${(c.ms / 1000).toFixed(1)} s · ${n(c.input_tokens)} in, ${n(c.output_tokens)} out tokens`}</div>`).join("")}`;
+  d.innerHTML = `<div class="name">AI models</div>${calls.map((c) => `<div>${esc(c.label || c.model || "Model")}${c.tool ? ` (in ${esc(c.tool)})` : ""}: ${esc(c.job || "")}${c.error ? ` · <span class="pill warn">${/budget/.test(c.error) ? "budget used up" : "failed"}</span>` : ` · ${(c.ms / 1000).toFixed(1)} s · ${n(c.input_tokens)} in, ${n(c.output_tokens)} out tokens`}</div>`).join("")}`;
   trace.prepend(d);
 }
 let unseen = 0;

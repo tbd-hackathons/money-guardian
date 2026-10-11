@@ -15,6 +15,11 @@
 //   N11 The model's thinking is shown to Anna.
 //   N12 The brief cites a source no tool found.
 //   N13 The brief decides by itself: the request is no longer waiting for Anna.
+//   N14 Calls go on after the day's token budget is spent, so the free credits run out before judging ends.
+//   N15 Over the budget, Margaret gets no answer.
+//   N16 Over the budget, the warnings check stops counting a regulator's warning.
+//   N17 Over the budget, Anna's request waits for a brief that never comes.
+//   N18 The budget never resets. Not tested here: it needs a clock. The count is kept per UTC date.
 //
 // It leaves test/artifacts/nemotron.json: every case, what it asked, what came back, and what the models received.
 import assert from "node:assert/strict";
@@ -25,12 +30,15 @@ import { createServer as netServer } from "node:net";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { e2eSuite } from "./artifact.js";
 
 const e2e = e2eSuite("nemotron", "Nemotron 3.5 Lightning runs the voice turn and Nemotron 3 Ultra writes the family brief, through the real /api/chat endpoint and MCP server.");
 
 const FAST = "nvidia/Nemotron-3_5-Lightning", DEEP = "nvidia/Nemotron-3-Ultra-550b-a55b";
 const FINRA_RED_FLAGS = "https://www.finra.org/investors/protect-your-money/avoid-fraud/red-flags-fraud";
+const FCA = "https://www.fca.org.uk/news/warnings/bramwell-kent-consultants-llc";
 
 // ---------- The fake Token Factory ----------
 // Lightning: calls check_pitch for an offer, request_family_approval for "tell Anna", then answers from the tool result.
@@ -41,6 +49,13 @@ const fake = createServer(async (req, res) => {
   let raw = "";
   for await (const c of req) raw += c;
   const body = JSON.parse(raw || "{}");
+  // For the server that runs online: Tavily, TreasuryDirect, FINRA and FDIC, all fake.
+  if (req.url.startsWith("/treasury")) return res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify([{ securityTerm: "4-Week", highInvestmentRate: "4.62", auctionDate: "2026-10-06T00:00:00" }]));
+  if (req.url.startsWith("/finra/") || req.url.startsWith("/fdic")) return res.writeHead(404).end();
+  if (req.url === "/tavily/search") {
+    return res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ results: [
+      { url: FCA, title: "Bramwell & Kent Consultants LLC | FCA", content: "Unauthorised firm - Bramwell & Kent Consultants LLC. This firm is not authorised by us." }] }));
+  }
   seen.push({ headers: req.headers, body });
   const answer = (message, usage = { prompt_tokens: 1200, completion_tokens: 40 }) =>
     res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ id: `c${seen.length}`, model: body.model, choices: [{ index: 0, message: { role: "assistant", ...message }, finish_reason: message.tool_calls ? "tool_calls" : "stop" }], usage }));
@@ -67,21 +82,34 @@ const fake = createServer(async (req, res) => {
 });
 
 const freePort = () => new Promise((ok) => { const s = netServer().listen(0, "127.0.0.1", () => { const { port } = s.address(); s.close(() => ok(port)); }); });
-let base, proc;
-before(async () => {
-  await new Promise((ok) => fake.listen(0, "127.0.0.1", ok));
+const procs = [];
+async function start(extra) {
   const port = await freePort();
   const env = { ...process.env, PORT: String(port), MG_LEDGER: join(mkdtempSync(join(tmpdir(), "mg-")), "l.json"), MG_OFFLINE: "1",
     NEBIUS_API_KEY: "nb-test-not-real", MG_NEBIUS_BASE_URL: `http://127.0.0.1:${fake.address().port}/v1` };
-  for (const k of ["ANTHROPIC_API_KEY", "MG_BEDROCK_REGION", "MG_SES_REGION", "TAVILY_API_KEY", "MG_TAVILY"]) delete env[k];
-  proc = spawn(process.execPath, ["src/server.js"], { env, stdio: ["ignore", "pipe", "pipe"] });
-  await new Promise((ok) => proc.stdout.once("data", ok));
-  base = `http://127.0.0.1:${port}`;
+  for (const k of ["ANTHROPIC_API_KEY", "MG_BEDROCK_REGION", "MG_SES_REGION", "TAVILY_API_KEY", "MG_TAVILY", "MG_NEMOTRON_DAILY_TOKENS"]) delete env[k];
+  const p = spawn(process.execPath, ["src/server.js"], { env: { ...env, ...extra }, stdio: ["ignore", "pipe", "pipe"] });
+  procs.push(p);
+  await new Promise((ok) => p.stdout.once("data", ok));
+  return `http://127.0.0.1:${port}`;
+}
+let base;
+before(async () => {
+  await new Promise((ok) => fake.listen(0, "127.0.0.1", ok));
+  base = await start({});
 });
-after(() => { proc.kill(); fake.close(); });
+after(() => { procs.forEach((p) => p.kill()); fake.close(); });
 
-const say = async (text, session_id) =>
-  (await fetch(`${base}/api/chat`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ session_id, text }) })).json();
+const say = async (text, session_id, at = base) =>
+  (await fetch(`${at}/api/chat`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ session_id, text }) })).json();
+const briefFor = async (at, subject) => {
+  let b;
+  for (let i = 0; i < 50 && (!b || b.status === "writing"); i++) {
+    b = (await (await fetch(`${at}/api/approvals`)).json()).find((a) => a.subject_id === subject)?.brief;
+    if (!b || b.status === "writing") await new Promise((ok) => setTimeout(ok, 100));
+  }
+  return b;
+};
 // What each model call received, without the key itself.
 const calls = () => seen.map(({ headers, body }) => ({ model: body.model, auth: headers.authorization ? "bearer key" : "none",
   tools: body.tools?.map((t) => t.function?.name) ?? null, last_message: body.messages.at(-1).role, json_mode: body.response_format?.type ?? null }));
@@ -173,4 +201,39 @@ e2e("Ultra writes the family a brief in the background, citing only sources the 
   assert.match(ultra.body.messages[1].content, /check_pitch/); // it read what the tools found
   // The brief advises only: the request is still waiting for Anna.
   assert.equal(list.find((a) => a.subject_id === "offer-caller").status, "pending");
+});
+
+e2e("over the day's token budget, Nemotron stops and every answer still comes", ["N14", "N15", "N16", "N17"], async (record) => {
+  const f = `http://127.0.0.1:${fake.address().port}`;
+  const capped = await start({ MG_NEMOTRON_DAILY_TOKENS: "2000", MG_TAVILY: "keyless", MG_TAVILY_URL: `${f}/tavily`, MG_OFFLINE: "0",
+    MG_TREASURY_URL: `${f}/treasury`, MG_BROKERCHECK_URL: `${f}/finra`, MG_FDIC_URL: `${f}/fdic` });
+  seen.length = 0;
+  const first = await say(PITCH, "b1", capped); // two Lightning calls of 1,240 tokens each: the budget is spent
+  const second = await say(PITCH, "b1", capped);
+  const client = new Client({ name: "e2e", version: "0" });
+  await client.connect(new StreamableHTTPClientTransport(new URL(`${capped}/mcp`)));
+  const warn = (await client.callTool({ name: "check_warnings", arguments: { name: "Bramwell & Kent Consultants" } })).structuredContent;
+  await client.close();
+  const asked = await say("Yes, tell Anna.", "b1", capped);
+  const subject = asked.trace.find((x) => x.tool === "request_family_approval")?.args.subject_id;
+  const brief = await briefFor(capped, subject);
+  const m = await (await fetch(`${capped}/api/mode`)).json();
+  record("first_turn", { mode: first.mode, usage: usage(first.ai) });
+  record("second_turn", { mode: second.mode, reply: second.reply, usage: usage(second.ai) });
+  record("warnings_check", { status: warn.status, read_by: warn.warnings.map((w) => w.checked_by), model_calls: warn.ai });
+  record("brief", brief);
+  record("budget", m.budget);
+  record("model_calls_made", seen.length);
+  assert.equal(first.mode, "nemotron");
+  assert.equal(second.mode, "scripted");
+  assert.match(second.reply, /scam/);
+  assert.match(second.ai.find((a) => a.error).error, /budget/);
+  assert.equal(warn.status, "warned"); // the regulator's page about this one firm still counts
+  assert.deepEqual(warn.warnings.map((w) => w.checked_by), ["page address rule"]);
+  assert.match(warn.ai[0].error, /budget/);
+  assert.equal(asked.trace[0].tool, "request_family_approval");
+  assert.equal(brief.status, "skipped");
+  assert.match(brief.note, /budget/);
+  assert.equal(seen.length, 2); // nothing reached Token Factory after the budget was spent
+  assert.deepEqual(m.budget, { tokens_per_day: 2000, used_today: 2480 });
 });

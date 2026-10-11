@@ -30,8 +30,8 @@
   .brief summary { cursor: pointer; font-weight: 600; font-size: 14px; }
   .brief .headline { font-weight: 600; font-size: 15px; margin: 8px 0 4px; }
   .brief p { margin: 6px 0; } .brief ul { margin: 6px 0; } .brief a { color: inherit; }
-  .brief .suggest { font-weight: 600; } .brief .suggest.say_no { color: var(--no); } .brief .suggest.approve { color: var(--ok); }
-  .brief.writing { color: var(--muted); font-style: italic; }
+  .suggest { font-weight: 600; font-size: 14px; margin: 8px 0; } .suggest.say_no { color: var(--no); } .suggest.approve { color: var(--ok); }
+  .brief.writing { color: var(--muted); font-style: italic; } .brief.none { color: var(--muted); }
 </style>
 </head>
 <body>
@@ -45,16 +45,20 @@ const demo = new URL(location.href).searchParams.get("demo");
 const q = /^[a-z0-9]{6,24}$/.test(demo || "") ? `?demo=${demo}` : "";
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 const SUGGEST = { say_no: "Suggestion: say no", call_first: "Suggestion: call Mom first", approve: "Suggestion: approve" };
+// The suggestion sits above the buttons, so Anna can answer without scrolling; the full brief is below them.
+const suggestion = (b) => (b?.status === "ready" && SUGGEST[b.suggestion]
+  ? `<p class="suggest ${esc(b.suggestion)}">${esc(SUGGEST[b.suggestion])}${b.suggestion_why ? `. ${esc(b.suggestion_why)}` : ""}</p>` : "");
 function brief(b) {
-  if (!b || b.status === "failed") return "";
+  if (!b) return "";
   if (b.status === "writing") return `<div class="brief writing">${esc(b.written_by || "Nemotron")} is writing a short brief…</div>`;
+  if (b.status === "skipped") return `<div class="brief none">No case brief this time: today's Nemotron budget is used up.</div>`;
+  if (b.status !== "ready") return `<div class="brief none">Nemotron couldn't write a case brief this time.</div>`;
   const link = (u) => (/^https:\/\//.test(u || "") ? ` <a href="${esc(u)}" target="_blank" rel="noopener">source</a>` : "");
   return `<details class="brief" open><summary>Case brief</summary>
     <p class="headline">${esc(b.headline)}</p>
     <p>${esc(b.what_happened)}</p>
     ${b.checks?.length ? `<ul>${b.checks.map((c) => `<li>${esc(c.fact)}${link(c.source_url)}</li>`).join("")}</ul>` : ""}
     <p>${esc(b.assessment)}</p>
-    <p class="suggest ${esc(b.suggestion)}">${esc(SUGGEST[b.suggestion] || "")}${b.suggestion_why ? `. ${esc(b.suggestion_why)}` : ""}</p>
     ${b.ask_mom?.length ? `<p>Ask Mom: ${b.ask_mom.map(esc).join(" ")}</p>` : ""}
     <p class="meta">Written by ${esc(b.written_by)} on Nebius${b.ms ? ` in ${(b.ms / 1000).toFixed(1)} s` : ""}. It only advises: you decide.</p>
   </details>`;
@@ -70,11 +74,12 @@ async function load() {
       <div class="card ${a.status}">
         <h2>${esc(a.summary)}</h2>
         ${a.reasons?.length ? `<ul>${a.reasons.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>` : ""}
-        ${brief(a.brief)}
+        ${suggestion(a.brief)}
         <div class="meta">Asked ${new Date(a.created_at).toLocaleString("en-GB", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" })}</div>
         ${a.status === "pending"
           ? `<div class="actions"><button class="approve" data-id="${esc(a.approval_id)}" data-d="approve">Approve</button><button class="deny" data-id="${esc(a.approval_id)}" data-d="deny">Say no</button></div>`
           : `<div class="status ${a.status}">${a.status === "approved" ? "You approved this" : "You said no"}</div>`}
+        ${brief(a.brief)}
       </div>`).join("");
   } catch {}
 }

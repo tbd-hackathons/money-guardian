@@ -9,7 +9,7 @@ import { PRODUCTS, findProduct } from "./products.js";
 import { reviewBill, requestApproval, approvalStatus, payBill, household, attachBrief } from "./guard.js";
 import { notifyFamily } from "./notify.js";
 import { searchWarnings, warningsEnabled, REGULATORS } from "./warnings.js";
-import { remember, writeBrief } from "./brief.js";
+import { checkReasons, remember, writeBrief } from "./brief.js";
 import { nemotronEnabled, models } from "./nemotron.js";
 
 const spokenDate = (ymd) => new Date(`${ymd}T12:00:00Z`).toLocaleDateString("en-US", { month: "long", day: "numeric", timeZone: "UTC" });
@@ -216,16 +216,21 @@ export function buildServer() {
     inputSchema: { subject_id: z.string().describe("The bill id, or a short id for the investment offer"), summary: z.string(), reasons: z.array(z.string()).default([]), amount_usd: z.number().optional() },
     _meta: ui,
   }, async (args) => {
-    const a = requestApproval(args);
+    const { reasons, unbacked } = checkReasons(args);
+    const a = requestApproval({ ...args, reasons });
     const email = a.note ? null : await notifyFamily(a); // a new request only: asking twice sends nothing twice
     // Nemotron 3 Ultra writes the family a case brief in the background; the request is already waiting.
     if (!a.note && nemotronEnabled()) {
       attachBrief(a.approval_id, { status: "writing", written_by: models().deep.label });
       writeBrief(a).then((b) => attachBrief(a.approval_id, b))
-        .catch((e) => { console.error(`Family brief failed: ${e.message}`); attachBrief(a.approval_id, { status: "failed" }); });
+        .catch((e) => {
+          console.error(`Family brief failed: ${e.message}`);
+          attachBrief(a.approval_id, e.budget ? { status: "skipped", note: e.message } : { status: "failed" });
+        });
     }
     const how = email?.sent ? "emailed" : "asked";
-    return reply(`I've ${how} ${a.asked}, your ${a.relation}, to look at this. Nothing goes ahead until ${a.asked} answers.`, { ...a, ...(email ? { email } : {}) });
+    return reply(`I've ${how} ${a.asked}, your ${a.relation}, to look at this. Nothing goes ahead until ${a.asked} answers.`,
+      { ...a, ...(email ? { email } : {}), ...(unbacked.length ? { unbacked_reasons: unbacked } : {}) });
   });
 
   server.registerTool("approval_status", {

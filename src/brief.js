@@ -10,6 +10,7 @@
 
 import { currentDemo } from "./demo.js";
 import { complete, parseJson } from "./nemotron.js";
+import { mentionsName } from "./sources.js";
 
 const WINDOW_MS = 30 * 60 * 1000;
 const KEEP = 12;
@@ -37,6 +38,28 @@ export function remember(tool, args, result) {
 }
 
 export const recentEvidence = () => (evidence.get(currentDemo() || "") || []).filter((e) => Date.now() - e.at < WINDOW_MS);
+
+// Words that state what a check found: registration, or a regulator's warning or action. A reason with such
+// words reaches Anna only if a tool said it. The checks' own findings about this seller are added in their words,
+// so a warning reaches her even when the model leaves it out, and a finding about another firm never does.
+const CLAIM = /\b(warn\w*|alerts?|regulators?|registered|unregistered|registration|licen[cs]ed|unlicen[cs]ed|authori[sz]ed|unauthori[sz]ed|charged|fined|barred|banned|convicted|sanction\w*|SEC|FINRA|FCA|FTC|CFTC|NFA|NASAA|IOSCO|ASIC|FBI|CFPB|BrokerCheck|CRD)\b/i;
+const squash = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+
+/** The reasons for a request to Anna, checked against what the tools found for this household. */
+export function checkReasons({ summary = "", subject_id = "", reasons = [] }) {
+  const facts = recentEvidence();
+  const about = `${summary} ${String(subject_id).replace(/[-_]+/g, " ")} ${reasons.join(" ")}`;
+  const latest = (tool) => [...new Map(facts.filter((e) => e.tool === tool && e.args?.name && mentionsName(e.args.name, about)).map((e) => [squash(e.args.name), e])).values()];
+  const found = [
+    ...latest("check_seller").filter((e) => e.facts.status === "not_found").map((e) => `${e.args.name} is not registered to sell investments`),
+    ...latest("check_warnings").filter((e) => e.facts.status === "warned" && e.facts.say).map((e) => e.facts.say.replace(/\.$/, "")),
+  ];
+  const said = new Set(facts.flatMap((e) => [e.facts.say, ...(e.facts.reasons || []), ...(e.facts.flags || [])]).filter(Boolean).map(squash));
+  const kept = [], unbacked = [];
+  for (const r of reasons) (CLAIM.test(r) && !said.has(squash(r)) ? unbacked : kept).push(r);
+  const out = new Map([...found, ...kept].map((r) => [squash(r), r]));
+  return { reasons: [...out.values()], unbacked };
+}
 
 const SYSTEM = `You write a short case brief for a grown child who must decide whether to approve a payment or an investment for an older parent.
 The parent's voice assistant has already checked public records. You get the request and what the checks found.

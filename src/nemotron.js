@@ -21,6 +21,18 @@ export const models = () => Object.fromEntries(Object.keys(TIERS).map((t) => [t,
 
 const base = () => (process.env.MG_NEBIUS_BASE_URL || "https://api.tokenfactory.nebius.com/v1").replace(/\/+$/, "");
 
+// A daily token budget keeps a public demo inside its free credits: MG_NEMOTRON_DAILY_TOKENS (unset: no limit).
+// Past it, no call is made, and every caller falls back as it does when Token Factory is down: scripted replies,
+// the page-address rule for warnings, no case brief. The count is in memory per UTC date; a restart starts it again.
+const spent = { day: "", tokens: 0 };
+export function budget() {
+  const cap = Number(process.env.MG_NEMOTRON_DAILY_TOKENS || 0);
+  if (!cap) return null;
+  const day = new Date().toISOString().slice(0, 10);
+  if (spent.day !== day) Object.assign(spent, { day, tokens: 0 });
+  return { tokens_per_day: cap, used_today: spent.tokens };
+}
+
 // Reasoning models may think out loud. The listener only ever hears the answer.
 const stripThinking = (s) => (typeof s === "string" ? s.replace(/<think>[\s\S]*?<\/think>/g, "").replace(/^[\s\S]*?<\/think>/, "").trim() : "");
 
@@ -29,6 +41,10 @@ const stripThinking = (s) => (typeof s === "string" ? s.replace(/<think>[\s\S]*?
  * Throws on any HTTP error or timeout; callers decide what an honest fallback is.
  */
 export async function complete(tier, { messages, tools, json = false, maxTokens = 1024, temperature, timeoutMs = 20_000 }) {
+  const left = budget();
+  if (left && left.used_today >= left.tokens_per_day) {
+    throw Object.assign(new Error("Today's Nemotron token budget is used up; it starts again at 00:00 UTC"), { budget: true });
+  }
   const model = modelOf(tier);
   const body = { model, messages, max_tokens: maxTokens };
   if (tools?.length) Object.assign(body, { tools, tool_choice: "auto" });
@@ -46,6 +62,7 @@ export async function complete(tier, { messages, tools, json = false, maxTokens 
     throw Object.assign(new Error(`Token Factory answered HTTP ${res.status}: ${detail}`), { status: res.status });
   }
   const data = await res.json();
+  if (budget()) spent.tokens += (data.usage?.prompt_tokens ?? 0) + (data.usage?.completion_tokens ?? 0);
   const choice = data.choices?.[0] || {};
   const message = { ...(choice.message || {}), content: stripThinking(choice.message?.content) };
   return {
