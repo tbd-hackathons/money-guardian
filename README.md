@@ -18,7 +18,9 @@ This branch is our entry for the Nebius × NVIDIA Global AI Hackathon (Best Apps
 
 > *"A man from Bramwell and Kent Consultants called me. He says I'm guaranteed 18% a year, but only today, and I should keep it between us."*
 
-> Bramwell and Kent Consultants is not registered to sell investments, and the SEC and the UK's FCA have warned the public about them. This sounds like a scam: a guaranteed return and pressure to decide now. Please don't send money. Shall I tell Anna?
+> Bramwell and Kent Consultants is not registered to sell investments, and the UK's FCA has warned the public about them. This sounds like a scam: a guaranteed return and pressure to decide now. Please don't send money. Shall I tell Anna?
+
+That is the reply from a live search through Tavily, with no model reading the pages. The FCA's page about this one firm counts by its address. Tavily also found the SEC's PAUSE list page, but a list of many firms counts only after Nemotron 3 Super has read it, so without the model it stays a mention.
 
 Bramwell & Kent Consultants is a real name on the [SEC's PAUSE list](https://www.sec.gov/enforcement-litigation/public-alerts-unregistered-soliciting-entities/bramwell-kent-consultants-llc) and the [FCA's warning list](https://www.fca.org.uk/news/warnings/bramwell-kent-consultants-llc). Web search is loose, so three gates stand between a search hit and "regulators warn about them":
 
