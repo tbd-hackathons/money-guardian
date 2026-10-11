@@ -12,7 +12,7 @@ import { chat, resetSession, mode, provider, readCard } from "./agent.js";
 import { treasuryBillYields, warmBanks } from "./sources.js";
 import { runWithDemo, cleanDemoId } from "./demo.js";
 import { secIndexDate } from "./secindex.js";
-import { oauthEnabled, protectedResourceMetadata, authorizationServerMetadata, authorizeGet, authorizePost, token, readBearer, checkMcp } from "./oauth.js";
+import { oauthEnabled, protectedResourceMetadata, authorizationServerMetadata, authorizeGet, authorizePost, token, readBearer, checkMcp, signInPolicy } from "./oauth.js";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const PORT = Number(process.env.PORT || 8790);
@@ -122,7 +122,7 @@ async function handle(req, res, url) {
     if (url.pathname === "/oauth/authorize" && oauthEnabled()) {
       const r = req.method === "POST" ? authorizePost(new URLSearchParams(await readRaw(req)), clientIp(req)) : authorizeGet(url.searchParams);
       if (r.redirect) { res.writeHead(302, { Location: r.redirect, "Cache-Control": "no-store" }); return res.end(); }
-      res.writeHead(r.status, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "X-Frame-Options": "DENY", "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'" });
+      res.writeHead(r.status, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "X-Frame-Options": "DENY", "Content-Security-Policy": signInPolicy() });
       return res.end(r.html);
     }
     if (url.pathname === "/oauth/token" && oauthEnabled()) {

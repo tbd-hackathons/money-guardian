@@ -102,6 +102,9 @@ test("a service token lists tools and runs the public checks, but a household to
 test("account linking: passcode, code, PKCE, then the household's own tools work", async () => {
   const { pageRes, location, verifier } = await link();
   assert.equal(pageRes.headers.get("x-frame-options"), "DENY");
+  // Browsers apply form-action to the redirect after the post: Alexa's addresses must be allowed.
+  const csp = pageRes.headers.get("content-security-policy");
+  for (const u of [REDIRECT, OTHER_REDIRECT]) assert.ok(csp.split(";").find((d) => d.trim().startsWith("form-action")).includes(new URL(u).origin), csp);
   const back = new URL(location);
   assert.equal(`${back.origin}${back.pathname}`, REDIRECT);
   assert.equal(back.searchParams.get("state"), "st4te");

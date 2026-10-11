@@ -50,7 +50,15 @@ function unseal(purpose, token) {
 }
 
 const sameResource = (r) => r === resourceUri() || r === `${resourceUri()}/`;
-const redirectAllowed = (u) => env("MG_OAUTH_REDIRECT_URIS").split(",").map((s) => s.trim()).filter(Boolean).includes(u);
+const redirectUris = () => env("MG_OAUTH_REDIRECT_URIS").split(",").map((s) => s.trim()).filter(Boolean);
+const redirectAllowed = (u) => redirectUris().includes(u);
+
+/** The sign-in page's CSP. Browsers apply form-action to the redirect that follows the post too, so
+ *  the registered Alexa addresses must be listed, or linking stops on this page. */
+export function signInPolicy() {
+  const origins = [...new Set(redirectUris().map((u) => { try { return new URL(u).origin; } catch { return null; } }).filter(Boolean))];
+  return `default-src 'none'; style-src 'unsafe-inline'; form-action 'self' ${origins.join(" ")}; frame-ancestors 'none'`.replace("  ", " ");
+}
 
 // ---------- Discovery documents ----------
 
